@@ -1,5 +1,5 @@
 tool      = "reference_frame"
-frames    = ["tafel.png"]
-ranges    = ["start+5s"]
+frames    = ["FFE-Filmerbe-DEFA-Titel_Tafel.png"]
+ranges    = ["start+10s"]
 require   = "any"
 threshold = 0.90

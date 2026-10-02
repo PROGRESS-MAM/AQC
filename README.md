@@ -50,10 +50,13 @@ Ergebnis: `dist/qc_marathon_<app_version>.exe` mit Adapter, Worker, AQC, `marath
 | `work_dir` | Arbeitsordner von Marathon, wie `work_dir` in Marathons `res/config.ini` |
 | `poll_seconds` | Wartezeit, wenn der Pool leer ist |
 | `heartbeat_seconds` | Abstand der Lebenszeichen an Marathon, 1 bis 60 |
-| `qc_plan_name` | Name des Prüfplans; steht als `preset` im Report |
-| `qc_plan` | Prüfplan: Liste der Tests |
+| `qc_plan_name` | Name des Standard-Prüfplans; steht als `preset` im Report |
+| `qc_plan` | Standard-Prüfplan für alle Clips: Liste der Tests |
+| `ffe_plan_name` | Name der FFE-Tafel-Tests; im Report als `<qc_plan_name>+<ffe_plan_name>` |
+| `ffe_ids_file` | ID-Liste der FFE-Clips in `marathon/configs/` |
+| `ffe_plan` | zusätzliche Tests für Clips auf der ID-Liste |
 
-Ein Eintrag in `qc_plan`:
+Ein Eintrag in `qc_plan` oder `ffe_plan`:
 
 ```python
 {"test": "reference_frame", "config": "FFE_tafel_ende_not_ok", "must_fail": True}
@@ -65,7 +68,36 @@ Ein Eintrag in `qc_plan`:
 | `config` | Name der TOML-Datei in `marathon/configs/` ohne Endung |
 | `must_fail` | optional; `True`, wenn der Test nicht bestehen darf |
 
-Beim Start prüft der Adapter, ob alle Prüfmethoden bekannt und alle Configs vorhanden sind.
+Beim Start prüft der Adapter, ob alle Prüfmethoden bekannt, alle Configs und Referenzbilder vorhanden und die ID-Liste lesbar ist.
+
+## FFE-Tafel
+
+Clips, deren `clip_id` in der ID-Liste steht, werden nach dem Standard-Prüfplan zusätzlich auf die Tafel `FFE-Filmerbe-DEFA-Titel_Tafel.png` geprüft. Alle anderen Clips erhalten keine Tafel-Tests.
+
+| Test | Config | Prüfbereich | bestanden, wenn |
+|---|---|---|---|
+| Tafel am Anfang | `FFE_tafel_start_ok` | erste 10 s (`start+10s`) | Tafel vorhanden |
+| Tafel am Ende | `FFE_tafel_ende_not_ok` | letzte 10 s (`end-10s`), `must_fail` | keine Tafel |
+
+Fehlt die Tafel am Anfang oder ist sie am Ende vorhanden, ist der Job `rejected`; der Kurztext nennt den Test.
+
+Dateien in `marathon/configs/`:
+
+| Datei | Inhalt |
+|---|---|
+| `FFE-Filmerbe-DEFA-Titel_Tafel.png` | Referenzbild der Tafel |
+| `FFE-Filmerbe-DEFA-Titel_ids.json` | ID-Liste |
+
+ID-Liste: unter `titel` je Titel ein Eintrag. Berücksichtigt werden nur Einträge mit `clip_id` (Text oder Zahl); Einträge mit `"clip_id": null` werden übersprungen. Übrige Felder dienen nur der Pflege.
+
+```json
+{"titel": [
+  {"title": "Sabine Wulff", "clip_id": "439074", "status": "eindeutig"},
+  {"title": "Dornröschen", "clip_id": null, "status": "offen"}
+]}
+```
+
+Zum Ergänzen die `clip_id` eintragen und eine neue EXE bauen.
 
 ## Ergebnis eines Marathon-Jobs
 
@@ -77,6 +109,8 @@ Beim Start prüft der Adapter, ob alle Prüfmethoden bekannt und alle Configs vo
 | alle Tests bestanden | `ok` |
 | mindestens ein Test nicht bestanden | `rejected` |
 | Test nicht ausführbar, Clip unlesbar, Job ungültig oder Fehler | `failed` |
+
+`preset` im Report: `proxy_standard`, für Clips auf der ID-Liste `proxy_standard+ffe_tafel`. Jobs ohne `input` oder `clip_id` sind ungültig.
 
 ## Dateien auf der Marathon-Freigabe
 
