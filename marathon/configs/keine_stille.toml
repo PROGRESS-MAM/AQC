@@ -1,0 +1,3 @@
+tool         = "digital_silence"
+min_duration = "0.1s"
+expected     = ["start+5s", "end-50s"]

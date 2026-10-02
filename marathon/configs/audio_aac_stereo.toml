@@ -1,0 +1,5 @@
+tool     = "stream_specs"
+stream   = "audio"
+codec    = "aac"
+bitrate  = "320k"
+channels = 2

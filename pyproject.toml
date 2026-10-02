@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "aqc"
+description = "Automatische Qualitaetskontrolle von Clips"
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["version"]
+dependencies = [
+    "numpy",
+]
+
+
+[project.optional-dependencies]
+worker = [
+    "toolbox @ git+https://github.com/PROGRESS-MAM/TOOLBOX.git@main",
+]
+build = [
+    "pyinstaller>=6",
+]
+
+
+[tool.setuptools.dynamic]
+version = {attr = "aqc.aqc.app_version"}
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aqc*"]

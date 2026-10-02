@@ -1,0 +1,5 @@
+tool      = "reference_frame"
+frames    = ["tafel.png"]
+ranges    = ["start+5s"]
+require   = "any"
+threshold = 0.90

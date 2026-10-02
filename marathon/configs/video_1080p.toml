@@ -1,0 +1,8 @@
+tool           = "stream_specs"
+stream         = "video"
+width          = 1920
+height         = 1080
+scan           = "progressive"
+fps            = [24, 25, 50]
+bitrate        = { min = "9M", max = "11M" }
+bitrate_source = "file"
