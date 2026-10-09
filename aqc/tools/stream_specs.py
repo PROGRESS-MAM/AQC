@@ -3,7 +3,7 @@ from functools import partial
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
-from ..aqc import Clip, Failure, Outcome, ProgressFn, Test, ffprobe_lines, load_config, make_test, parse_number, stream_fps
+from ..aqc import Clip, Failure, Outcome, ProgressFn, Tool, ffprobe_lines, load_config, make_tool, parse_number, stream_fps
 
 
 # --------- CONFIG ---------
@@ -139,8 +139,8 @@ def _check_expected(path: Path, key: str, value: Any) -> None:
         raise ValueError(f"Config {path}: {key} muss Wert, Liste oder {{min, max}} sein.")
 
 
-def stream_specs(config: str | Path, option: object = None) -> Test:
-    """Test properties of all streams of one type against the config.
+def stream_specs(config: str | Path, option: object = None) -> Tool:
+    """Check properties of all streams of one type against the config.
 
     config: name of configs/<name>.toml or a path; TOML with tool = "stream_specs", stream ("video", "audio", ...), optional bitrate_source ("file"/"measured")
     and criteria (fixed names or any FFprobe stream field) as value, list or {min, max}.
@@ -157,4 +157,4 @@ def stream_specs(config: str | Path, option: object = None) -> Test:
         raise ValueError(f"Config {path}: keine Kriterien angegeben.")
     for key, value in criteria:
         _check_expected(path, key, value)
-    return make_test("stream_specs", path, option, partial(_run, stream_type, source, criteria))
+    return make_tool("stream_specs", path, option, partial(_run, stream_type, source, criteria))

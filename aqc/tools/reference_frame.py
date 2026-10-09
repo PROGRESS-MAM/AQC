@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable
 import math
 import numpy as np
-from ..aqc import Clip, Failure, Outcome, ProgressFn, Range, Test, ffmpeg_chunks, load_config, make_test, parse_range
+from ..aqc import Clip, Failure, Outcome, ProgressFn, Range, Tool, ffmpeg_chunks, load_config, make_tool, parse_range
 
 
 # --------- CONFIG ---------
@@ -106,8 +106,8 @@ def _text_list(path: Path, key: str, value) -> list[str]:
     return value
 
 
-def reference_frame(config: str | Path, option: object = None) -> Test:
-    """Test whether reference images appear in the given ranges (pHash similarity).
+def reference_frame(config: str | Path, option: object = None) -> Tool:
+    """Check whether reference images appear in the given ranges (pHash similarity).
 
     config: name of configs/<name>.toml or a path; TOML with tool = "reference_frame", frames, ranges, require ("any"/"all") and threshold (0..1).
     Reference images are relative to the config and hashed now. option: None or must_fail.
@@ -121,5 +121,5 @@ def reference_frame(config: str | Path, option: object = None) -> Test:
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
         raise ValueError(f"Config {path}: threshold muss eine Zahl von 0 bis 1 sein.")
     hashes = np.stack([_image_hash(path.parent / name) for name in names])
-    return make_test("reference_frame", path, option,
+    return make_tool("reference_frame", path, option,
                      partial(_run, names, hashes, ranges, data["require"], float(threshold)))

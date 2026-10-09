@@ -6,18 +6,18 @@ import inspect
 import json
 import os
 import aqc
-import aqc.tests
+import aqc.tools
 from aqc.aqc import status_texts
 from toolbox import tb_write_log
 
 
 # --------- CONFIG ---------
 app_name = "QC Worker"
-app_version = "1.0.0"
+app_version = "2.0.0"
 
 report_suffix = ".aqc.json"
 system_files = frozenset({"thumbs.db", "desktop.ini", ".ds_store"})
-test_keys = ("test", "config", "must_fail")
+tool_keys = ("tool", "config", "must_fail")
 states = ("ok", "rejected", "error")       # also the order of severity
 
 
@@ -47,8 +47,8 @@ def versions() -> dict[str, str]:
 
 
 def methods() -> dict[str, Callable]:
-    """Test methods of aqc.tests by name; new methods in the core are found without changes here."""
-    return {name: item for name, item in vars(aqc.tests).items()
+    """Tools of aqc.tools by name; new tools in the core are found without changes here."""
+    return {name: item for name, item in vars(aqc.tools).items()
             if inspect.isfunction(item) and not name.startswith("_")}
 
 
@@ -89,21 +89,21 @@ def _collect(sources: list[str | Path], recursive: bool) -> list[Path]:
     return files
 
 
-def _build_tests(tests: list[dict[str, Any]]) -> list[aqc.aqc.Test]:
-    if not isinstance(tests, (list, tuple)) or not tests:
-        raise ValueError("tests muss eine nicht leere Liste sein.")
+def _build_tools(tools: list[dict[str, Any]]) -> list[aqc.aqc.Tool]:
+    if not isinstance(tools, (list, tuple)) or not tools:
+        raise ValueError("tools muss eine nicht leere Liste sein.")
     available, built = methods(), []
-    for number, spec in enumerate(tests, 1):
-        if not isinstance(spec, dict) or (unknown := set(spec) - set(test_keys)):
-            raise ValueError(f"Test {number}: erwartet ein dict mit {', '.join(test_keys)}"
+    for number, spec in enumerate(tools, 1):
+        if not isinstance(spec, dict) or (unknown := set(spec) - set(tool_keys)):
+            raise ValueError(f"Tool {number}: erwartet ein dict mit {', '.join(tool_keys)}"
                              + (f", unbekannt: {', '.join(sorted(unknown))}" if isinstance(spec, dict) else "") + ".")
-        name, config, must = spec.get("test"), spec.get("config"), spec.get("must_fail", False)
+        name, config, must = spec.get("tool"), spec.get("config"), spec.get("must_fail", False)
         if name not in available:
-            raise ValueError(f"Test {number}: unbekannte Prüfmethode {name!r}, verfügbar: {', '.join(sorted(available))}.")
+            raise ValueError(f"Tool {number}: unbekanntes Prüftool {name!r}, verfügbar: {', '.join(sorted(available))}.")
         if not isinstance(config, (str, Path)) or not str(config).strip():
-            raise ValueError(f"Test {number}: config fehlt.")
+            raise ValueError(f"Tool {number}: config fehlt.")
         if not isinstance(must, bool):
-            raise ValueError(f"Test {number}: must_fail muss true oder false sein.")
+            raise ValueError(f"Tool {number}: must_fail muss true oder false sein.")
         built.append(available[name](config, aqc.must_fail if must else None))
     return built
 
@@ -112,18 +112,18 @@ def _build_tests(tests: list[dict[str, Any]]) -> list[aqc.aqc.Test]:
 def _clip_state(result: dict) -> str:
     if result["passed"]:
         return "ok"
-    unrunnable = any(entry["status"] == status_texts[None] for entry in result["tests"])
-    return "error" if result["error"] or unrunnable or not result["tests"] else "rejected"
+    unrunnable = any(entry["status"] == status_texts[None] for entry in result["tools"])
+    return "error" if result["error"] or unrunnable or not result["tools"] else "rejected"
 
 
 def _clip_summary(result: dict, state: str) -> str:
-    tests = result["tests"]
+    tools = result["tools"]
     if state == "ok":
-        return f"{result['clip']}: bestanden ({len(tests)} Tests)"
+        return f"{result['clip']}: bestanden ({len(tools)} Tools)"
     if state == "rejected":
-        failed = [entry["label"] for entry in tests if entry["status"] == status_texts[False]]
-        return f"{result['clip']}: nicht bestanden ({len(failed)} von {len(tests)} Tests): {', '.join(failed)}"
-    reason = next((line for line in (result["error"] or "").splitlines() if line.strip()), "Test nicht ausführbar")
+        failed = [entry["label"] for entry in tools if entry["status"] == status_texts[False]]
+        return f"{result['clip']}: nicht bestanden ({len(failed)} von {len(tools)} Tools): {', '.join(failed)}"
+    reason = next((line for line in (result["error"] or "").splitlines() if line.strip()), "Tool nicht ausführbar")
     return f"{result['clip']}: nicht ausführbar: {reason}"
 
 
@@ -136,8 +136,8 @@ def _report_path(folder: Path, clip: Path, used: set[str]) -> Path:
     return path
 
 
-def _check_clip(path: Path, tests: list, report_folder: Path, used: set[str], log_path: Path | None) -> ClipResult:
-    result, progress, _ = aqc.check(path, tests)
+def _check_clip(path: Path, tools: list, report_folder: Path, used: set[str], log_path: Path | None) -> ClipResult:
+    result, progress, _ = aqc.check(path, tools)
     state = _clip_state(result)
     summary = _clip_summary(result, state)
     _log(log_path, progress)
@@ -159,24 +159,24 @@ def _summary(clips: list[ClipResult]) -> str:
 
 
 # --------- FUNC PUBLIC ---------
-def process(sources: list[str | Path], tests: list[dict[str, Any]], report_folder: str | Path,
+def process(sources: list[str | Path], tools: list[dict[str, Any]], report_folder: str | Path,
             recursive: bool = False, log_path: Path | None = None) -> QCResult:
-    """Check all files of sources with the given tests and write one JSON report per clip.
+    """Check all files of sources with the given tools and write one JSON report per clip.
 
     sources: files and/or folders; folders without subfolders unless recursive=True; system and dot files are skipped.
-    tests: [{"test": <aqc.tests method>, "config": <name in configs/ or path to TOML>, "must_fail": bool}, ...].
+    tools: [{"tool": <aqc.tools function>, "config": <name in configs/ or path to TOML>, "must_fail": bool}, ...].
     report_folder: target of <clip>.aqc.json, created if missing; existing reports are not overwritten.
-    Returns QCResult; state error if sources or tests are invalid or a clip could not be checked.
+    Returns QCResult; state error if sources or tools are invalid or a clip could not be checked.
     """
     _log(log_path, f"{app_name} {app_version} (AQC {aqc.app_version}) gestartet.")
     try:
-        files, built = _collect(sources, recursive), _build_tests(tests)
+        files, built = _collect(sources, recursive), _build_tools(tools)
         folder = Path(report_folder)
         folder.mkdir(parents=True, exist_ok=True)
     except (ValueError, OSError, RuntimeError) as exc:
         _log(log_path, f"Prüfung nicht möglich: {exc}")
         return QCResult("error", f"Prüfung nicht möglich: {exc}", [], versions())
-    _log(log_path, f"{len(files)} Datei(en), {len(built)} Tests, Berichte nach {folder}")
+    _log(log_path, f"{len(files)} Datei(en), {len(built)} Tools, Berichte nach {folder}")
     used: set[str] = set()
     clips = [_check_clip(path, built, folder, used, log_path) for path in files]
     state = max((clip.state for clip in clips), key=states.index)

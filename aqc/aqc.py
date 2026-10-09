@@ -17,7 +17,7 @@ import traceback
 
 # --------- CONFIG ---------
 app_name = "AQC"
-app_version = "0.2.0"
+app_version = "0.3.0"
 
 config_folder = "configs"
 res_name = "res"            # folder with ffmpeg/ffprobe, searched before PATH
@@ -53,7 +53,7 @@ ProgressFn = Callable[[float, float, float, str], None]     # media_done, media_
 # --------- TYPES ---------
 @dataclass(frozen=True)
 class Failure:
-    """One failed criterion of a test."""
+    """One failed criterion of a tool."""
     criterion: str
     expected: str
     actual: str
@@ -64,7 +64,7 @@ class Failure:
 
 @dataclass
 class Outcome:
-    """Raw test outcome before must_fail is applied."""
+    """Raw tool outcome before must_fail is applied."""
     passed: bool
     failures: list[Failure] = field(default_factory=list)
     info: list[str] = field(default_factory=list)
@@ -72,8 +72,8 @@ class Outcome:
 
 
 @dataclass(frozen=True)
-class Test:
-    """A configured test; runner(clip, progress) returns an Outcome."""
+class Tool:
+    """A configured tool; runner(clip, progress) returns an Outcome."""
     kind: str
     config: Path
     must_fail: bool
@@ -90,7 +90,7 @@ class Test:
 
 @dataclass(frozen=True)
 class Clip:
-    """Probed clip, passed to every test run."""
+    """Probed clip, passed to every tool run."""
     path: Path
     duration: float
     fps: Fraction | None
@@ -283,11 +283,11 @@ def load_config(config: str | Path, kind: str, allowed: tuple[str, ...] | None =
     return path, data
 
 
-def make_test(kind: str, config: Path, option: object, runner: Callable[[Clip, ProgressFn], Outcome]) -> Test:
-    """Build a Test; option must be None or must_fail."""
+def make_tool(kind: str, config: Path, option: object, runner: Callable[[Clip, ProgressFn], Outcome]) -> Tool:
+    """Build a Tool; option must be None or must_fail."""
     if option is not None and option is not must_fail:
         raise ValueError(f"{kind}({config.stem}): unbekannte Option {option!r}, erlaubt ist nur must_fail.")
-    return Test(kind, config, option is must_fail, runner)
+    return Tool(kind, config, option is must_fail, runner)
 
 
 # --------- FUNC FFMPEG ---------
@@ -401,52 +401,52 @@ def _config_text(path: Path) -> str:
     return str(path)
 
 
-def _run_test(test: Test, clip: Clip | None, probe_error: str | None, reporter: _Reporter) -> tuple[dict, str | None]:
-    entry = {"name": test.name, "kind": test.kind, "label": test.label, "config": _config_text(test.config),
-             "must_fail": test.must_fail, "status": status_texts[None], "message": None, "failures": [],
+def _execute_tool(tool: Tool, clip: Clip | None, probe_error: str | None, reporter: _Reporter) -> tuple[dict, str | None]:
+    entry = {"name": tool.name, "kind": tool.kind, "label": tool.label, "config": _config_text(tool.config),
+             "must_fail": tool.must_fail, "status": status_texts[None], "message": None, "failures": [],
              "info": [], "media_time": 0.0, "runtime": 0.0, "speed": 0.0}
     started, error, state = time.monotonic(), None, None
-    reporter.start(test.label)
+    reporter.start(tool.label)
     try:
         if clip is None:
             raise RuntimeError(f"Clip nicht lesbar: {probe_error}")
-        outcome = test.runner(clip, reporter.update)
-        state = outcome.passed != test.must_fail
-        failures = [Failure("must_fail", "nicht bestanden", "bestanden")] if test.must_fail and outcome.passed \
-            else [] if test.must_fail else outcome.failures
+        outcome = tool.runner(clip, reporter.update)
+        state = outcome.passed != tool.must_fail
+        failures = [Failure("must_fail", "nicht bestanden", "bestanden")] if tool.must_fail and outcome.passed \
+            else [] if tool.must_fail else outcome.failures
         info = outcome.info + ([f"erwartet nicht bestanden: {failure_text(asdict(f))}" for f in outcome.failures]
-                               if test.must_fail and not outcome.passed else [])
+                               if tool.must_fail and not outcome.passed else [])
         entry.update(failures=[asdict(f) for f in failures], info=info, media_time=outcome.media_time)
     except Exception as exc:
         entry["message"] = str(exc) or type(exc).__name__
         detail = "" if isinstance(exc, (ValueError, RuntimeError, OSError)) else f"\n{traceback.format_exc()}"
-        error = f"{test.label}: {entry['message']}{detail}"
+        error = f"{tool.label}: {entry['message']}{detail}"
     entry["status"], entry["runtime"] = status_texts[state], time.monotonic() - started
     entry["speed"] = entry["media_time"] / entry["runtime"] if entry["runtime"] else 0.0
-    reporter.finish(f"{test.label}  {console_texts[state]}  {entry['message'] or _timing_text(entry)}")
+    reporter.finish(f"{tool.label}  {console_texts[state]}  {entry['message'] or _timing_text(entry)}")
     return entry, error
 
 
-def check(clip_path: str | Path, tests: tuple[Test, ...] | list[Test],
+def check(clip_path: str | Path, tools: tuple[Tool, ...] | list[Tool],
           on_progress: Callable[[str, bool], None] | None = None) -> tuple[dict, str, str | None]:
-    """Run all tests on one clip and return (result, progress, error).
+    """Run all tools on one clip and return (result, progress, error).
 
-    result: JSON-ready dict with clip status, per test status, failures, info and timings.
+    result: JSON-ready dict with clip status, per tool status, failures, info and timings.
     progress: final summary line. error: text of all technical problems or None.
     on_progress(text, done) gets each running line (done=False) and finished line (done=True);
-    without it lines are printed to the console. A test that cannot run fails the clip.
+    without it lines are printed to the console. A tool that cannot run fails the clip.
     """
     started = time.monotonic()
     path = Path(clip_path)
     reporter = _Reporter(path.name, on_progress)
     result = {"clip": path.name, "path": str(path), "aqc_version": app_version, "status": status_texts[False],
               "passed": False, "start_tc": None, "duration": 0.0, "processing": 0.0, "speed": 0.0,
-              "tests": [], "error": None}
+              "tools": [], "error": None}
     errors = []
     try:
-        tests = tuple(tests)
-        if not tests or not all(isinstance(test, Test) for test in tests):
-            raise ValueError("tests muss eine nicht leere Liste von AQC-Tests sein.")
+        tools = tuple(tools)
+        if not tools or not all(isinstance(tool, Tool) for tool in tools):
+            raise ValueError("tools muss eine nicht leere Liste von AQC-Tools sein.")
         clip, probe_error = None, None
         try:
             clip = _probe(path)
@@ -454,11 +454,11 @@ def check(clip_path: str | Path, tests: tuple[Test, ...] | list[Test],
         except (ValueError, RuntimeError, OSError) as exc:
             probe_error = str(exc)
             errors.append(f"{path.name}: {probe_error}")
-        for test in tests:
-            entry, error = _run_test(test, clip, probe_error, reporter)
-            result["tests"].append(entry)
+        for tool in tools:
+            entry, error = _execute_tool(tool, clip, probe_error, reporter)
+            result["tools"].append(entry)
             errors += [error] if error and clip is not None else []
-        result["passed"] = all(entry["status"] == status_texts[True] for entry in result["tests"])
+        result["passed"] = all(entry["status"] == status_texts[True] for entry in result["tools"])
         result["status"] = status_texts[result["passed"]]
     except Exception as exc:
         errors.append(f"Unhandled error in aqc: {exc}\n{traceback.format_exc()}")
@@ -466,7 +466,7 @@ def check(clip_path: str | Path, tests: tuple[Test, ...] | list[Test],
     result["speed"] = result["duration"] / result["processing"] if result["processing"] else 0.0
     result["error"] = "\n".join(errors) or None
     progress = (f"{result['status']}  {_format_span(result['duration'])} Clip in "
-                f"{_format_span(result['processing'])} ({result['speed']:.1f}x), {len(result['tests'])} Tests")
+                f"{_format_span(result['processing'])} ({result['speed']:.1f}x), {len(result['tools'])} Tools")
     reporter.finish(progress)
     return result, f"{path.name} | {progress}", result["error"]
 
@@ -491,7 +491,7 @@ def report(result: dict) -> str:
              f"Prüfzeit:  {format_clock(result['processing'])} ({result['speed']:.1f}x)"]
     if result["error"]:
         lines += ["", "Technische Probleme:", *(f"  {line}" for line in result["error"].splitlines())]
-    for entry in result["tests"]:
+    for entry in result["tools"]:
         lines += ["", f"[{entry['status']}] {entry['label']}{' mit must_fail' if entry['must_fail'] else ''}",
                   f"  Config:    {entry['config']}",
                   f"  Laufzeit:  {_timing_text(entry)}"]

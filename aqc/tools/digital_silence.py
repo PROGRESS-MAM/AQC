@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable
 import math
 import numpy as np
-from ..aqc import Clip, Failure, Outcome, ProgressFn, Range, Test, ffmpeg_chunks, load_config, make_test, \
+from ..aqc import Clip, Failure, Outcome, ProgressFn, Range, Tool, ffmpeg_chunks, load_config, make_tool, \
     parse_number, parse_range, parse_seconds
 
 
@@ -93,8 +93,8 @@ def _run(min_duration: float, expected: tuple[Range, ...], clip: Clip, progress:
 
 
 # --------- FUNC CONFIG ---------
-def digital_silence(config: str | Path, option: object = None) -> Test:
-    """Test all channels of all audio streams for digital silence (samples exactly 0).
+def digital_silence(config: str | Path, option: object = None) -> Tool:
+    """Check all channels of all audio streams for digital silence (samples exactly 0).
 
     config: name of configs/<name>.toml or a path; TOML with tool = "digital_silence", min_duration (e.g. "0.1s") and optional expected ranges where silence is allowed.
     option: None or must_fail.
@@ -109,4 +109,4 @@ def digital_silence(config: str | Path, option: object = None) -> Test:
     expected = data.get("expected", [])
     if not isinstance(expected, list) or not all(isinstance(item, str) for item in expected):
         raise ValueError(f"Config {path}: expected muss eine Liste von Bereichsangaben sein.")
-    return make_test("digital_silence", path, option, partial(_run, min_duration, tuple(map(parse_range, expected))))
+    return make_tool("digital_silence", path, option, partial(_run, min_duration, tuple(map(parse_range, expected))))

@@ -22,9 +22,9 @@ from toolbox import tb_write_log
 
 # --------- CONFIG ---------
 app_name = "Marathon Adapter"
-app_version = "1.0.0"
+app_version = "1.1.0"
 
-schema_versions = (3,)                      # job schema versions this adapter understands
+schema_versions = (5,)                      # job schema versions this adapter understands
 stage_folders = {"Restore": "restore", "Transcode": "transcode", "QC": "qc"}
 report_statuses = ("ok", "failed", "rejected")
 worker_dir = "worker"

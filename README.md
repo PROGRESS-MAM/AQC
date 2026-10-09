@@ -6,12 +6,13 @@ Prüft Clips mit AQC. Der QC-Worker ist universell einsetzbar. Der Marathon-Adap
 
 | Pfad | Aufgabe |
 |---|---|
-| `aqc/` | Core: Prüfmethoden, `check()` |
+| `aqc/` | Core: `check()` |
+| `aqc/tools/` | Prüftools `stream_specs`, `digital_silence`, `reference_frame` |
 | `res/` | `ffmpeg` und `ffprobe` |
 | `qc_worker.py` | QC-Worker: `process()` |
 | `marathon/marathon_adapter.py` | allgemeiner Teil aller Marathon-Adapter, **nicht verändern** |
 | `marathon/qc_marathon.py` | QC-Adapter: Einstellungen und Prüfplan, Einstieg der EXE |
-| `marathon/configs/` | TOML-Dateien der Prüfmethoden und Referenzbilder |
+| `marathon/configs/` | TOML-Dateien der Prüftools |
 | `marathon/build_qc.py` | baut die EXE |
 
 ## Installation
@@ -51,66 +52,49 @@ Ergebnis: `dist/qc_marathon_<app_version>.exe` mit Adapter, Worker, AQC, `marath
 | `poll_seconds` | Wartezeit, wenn der Pool leer ist |
 | `heartbeat_seconds` | Abstand der Lebenszeichen an Marathon, 1 bis 60 |
 | `qc_plan_name` | Name des Standard-Prüfplans; steht als `preset` im Report |
-| `qc_plan` | Standard-Prüfplan für alle Clips: Liste der Tests |
-| `ffe_plan_name` | Name der FFE-Tafel-Tests; im Report als `<qc_plan_name>+<ffe_plan_name>` |
-| `ffe_ids_file` | ID-Liste der FFE-Clips in `marathon/configs/` |
-| `ffe_plan` | zusätzliche Tests für Clips auf der ID-Liste |
+| `qc_plan` | Standard-Prüfplan für alle Clips: Liste der Tools |
+| `ffe_plan_name` | Name der FFE-Tafel-Prüfung; im Report als `<qc_plan_name>+<ffe_plan_name>` |
+| `ffe_plan` | zusätzliche Tools für Jobs mit `"ffe_tafel": true` |
 
 Ein Eintrag in `qc_plan` oder `ffe_plan`:
 
 ```python
-{"test": "reference_frame", "config": "FFE_tafel_ende_not_ok", "must_fail": True}
+{"tool": "reference_frame", "config": "FFE_tafel_ende_not_ok", "must_fail": True}
 ```
 
 | Feld | Bedeutung |
 |---|---|
-| `test` | Prüfmethode aus `aqc.tests`, z. B. `stream_specs`, `digital_silence`, `reference_frame` |
+| `tool` | Prüftool aus `aqc.tools`, z. B. `stream_specs`, `digital_silence`, `reference_frame` |
 | `config` | Name der TOML-Datei in `marathon/configs/` ohne Endung |
-| `must_fail` | optional; `True`, wenn der Test nicht bestehen darf |
+| `must_fail` | optional; `True`, wenn das Tool nicht bestehen darf |
 
-Beim Start prüft der Adapter, ob alle Prüfmethoden bekannt, alle Configs und Referenzbilder vorhanden und die ID-Liste lesbar ist.
+Beim Start prüft der Adapter, ob alle Prüftools bekannt und alle Configs vorhanden und lesbar sind. Referenzbilder von Configs in `qc_plan` müssen neben der Config liegen; das Referenzbild der Tools in `ffe_plan` kommt aus dem Job.
 
 ## FFE-Tafel
 
-Clips, deren `clip_id` in der ID-Liste steht, werden nach dem Standard-Prüfplan zusätzlich auf die Tafel `FFE-Filmerbe-DEFA-Titel_Tafel.png` geprüft. Alle anderen Clips erhalten keine Tafel-Tests.
+Marathon entscheidet je Clip, ob er die FFE-Tafel braucht, und schreibt das als `ffe_tafel` in den QC-Job. Jobs mit `"ffe_tafel": true` werden nach dem Standard-Prüfplan zusätzlich mit `ffe_plan` geprüft, alle anderen nur mit `qc_plan`.
 
-| Test | Config | Prüfbereich | bestanden, wenn |
+Referenzbild ist die Datei aus `ffe_reference_image` im Job (z. B. `.marathon/worker/FFE-Filmerbe-DEFA-Titel_Tafel.png`); sie ersetzt `frames` in den Configs von `ffe_plan`. Marathon hält das Bild dort aktuell, der Worker liest es nur. Eine neue Tafel braucht daher keinen neuen Build.
+
+| Prüfung | Config | Prüfbereich | bestanden, wenn |
 |---|---|---|---|
 | Tafel am Anfang | `FFE_tafel_start_ok` | erste 10 s (`start+10s`) | Tafel vorhanden |
 | Tafel am Ende | `FFE_tafel_ende_not_ok` | letzte 10 s (`end-10s`), `must_fail` | keine Tafel |
 
-Fehlt die Tafel am Anfang oder ist sie am Ende vorhanden, ist der Job `rejected`; der Kurztext nennt den Test.
-
-Dateien in `marathon/configs/`:
-
-| Datei | Inhalt |
-|---|---|
-| `FFE-Filmerbe-DEFA-Titel_Tafel.png` | Referenzbild der Tafel |
-| `FFE-Filmerbe-DEFA-Titel_ids.json` | ID-Liste |
-
-ID-Liste: unter `titel` je Titel ein Eintrag. Berücksichtigt werden nur Einträge mit `clip_id` (Text oder Zahl); Einträge mit `"clip_id": null` werden übersprungen. Übrige Felder dienen nur der Pflege.
-
-```json
-{"titel": [
-  {"title": "Sabine Wulff", "clip_id": "439074", "status": "eindeutig"},
-  {"title": "Dornröschen", "clip_id": null, "status": "offen"}
-]}
-```
-
-Zum Ergänzen die `clip_id` eintragen und eine neue EXE bauen.
+Fehlt die Tafel am Anfang oder ist sie am Ende vorhanden, ist der Job `rejected`; der Kurztext nennt die Prüfung. Ist das Referenzbild nicht lesbar, ist der Job `failed`.
 
 ## Ergebnis eines Marathon-Jobs
 
-- Im `output_folder` des Jobs: `<clip>.aqc.json` mit dem vollständigen Prüfergebnis.
+- Im `output_folder` des Jobs: `<clip>.aqc.json` mit dem vollständigen Prüfergebnis, je Tool ein Eintrag unter `tools`.
 - Report an Marathon in `report_folder`: `<job_id>.json` mit `status`, `result` (Kurztext), `preset`, `worker` und `versions`.
 
 | Prüfergebnis | `status` |
 |---|---|
-| alle Tests bestanden | `ok` |
-| mindestens ein Test nicht bestanden | `rejected` |
-| Test nicht ausführbar, Clip unlesbar, Job ungültig oder Fehler | `failed` |
+| alle Tools bestanden | `ok` |
+| mindestens ein Tool nicht bestanden | `rejected` |
+| Tool nicht ausführbar, Clip unlesbar, Job ungültig oder Fehler | `failed` |
 
-`preset` im Report: `proxy_standard`, für Clips auf der ID-Liste `proxy_standard+ffe_tafel`. Jobs ohne `input` oder `clip_id` sind ungültig.
+`preset` im Report: `proxy_standard`, für Jobs mit `"ffe_tafel": true` `proxy_standard+ffe_tafel`. Ungültig sind Jobs ohne `input`, ohne `ffe_tafel` (`true`/`false`) und Jobs mit `"ffe_tafel": true` ohne `ffe_reference_image`.
 
 ## Dateien auf der Marathon-Freigabe
 
@@ -120,17 +104,18 @@ Zum Ergänzen die `clip_id` eintragen und eine neue EXE bauen.
 | `<work_dir>/qc/laufend/<Rechnername>/` | übernommene Jobs |
 | `<work_dir>/qc/fertig/` | Reports an Marathon |
 | `<work_dir>/worker/<Rechnername>.json` | Heartbeat mit laufendem Job und Versionen |
+| `ffe_reference_image` aus dem Job | Referenzbild der FFE-Tafel, wird nur gelesen |
 | `input` aus dem Job | Proxy, wird nur gelesen |
 | `output_folder` aus dem Job | Prüfberichte |
 
-Der Adapter verarbeitet nur Jobs mit `schema_version = 3`.
+Der Adapter verarbeitet nur Jobs mit `schema_version = 5`.
 
 ## QC-Worker direkt einbinden
 
 ```python
 from qc_worker import process
 
-result = process(["D:/clips"], [{"test": "stream_specs", "config": "C:/qc/video_1080p.toml"}],
+result = process(["D:/clips"], [{"tool": "stream_specs", "config": "C:/qc/video_1080p.toml"}],
                  "D:/berichte", recursive=True, log_path=None)
 print(result.state, result.summary)
 ```
@@ -138,14 +123,14 @@ print(result.state, result.summary)
 | Parameter | Bedeutung |
 |---|---|
 | `sources` | Liste von Dateien und/oder Ordnern; Systemdateien, Dateien mit Punkt am Anfang und `*.aqc.json` werden übersprungen |
-| `tests` | Liste wie `qc_plan`; `config` als Pfad zur TOML-Datei |
+| `tools` | Liste wie `qc_plan`; `config` als Pfad zur TOML-Datei |
 | `report_folder` | Ziel der Berichte `<clip>.aqc.json`; wird angelegt; vorhandene Berichte bleiben erhalten, neue erhalten `-1`, `-2` … |
 | `recursive` | `True`: Ordner samt Unterordnern |
 | `log_path` | optionale Log-Datei |
 
 | Ergebnis | Bedeutung |
 |---|---|
-| `state` | `ok`, `rejected` oder `error` (schlechtester Clip; `error` auch bei ungültigen Quellen oder Tests) |
+| `state` | `ok`, `rejected` oder `error` (schlechtester Clip; `error` auch bei ungültigen Quellen oder Tools) |
 | `summary` | Kurztext |
 | `clips` | je Clip `source`, `state`, `summary`, `report` |
 | `versions` | Versionen von QC-Worker und AQC |
