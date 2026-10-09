@@ -17,7 +17,7 @@ import traceback
 
 # --------- CONFIG ---------
 app_name = "AQC"
-app_version = "0.3.0"
+app_version = "0.3.1"
 
 config_folder = "configs"
 res_name = "res"            # folder with ffmpeg/ffprobe, searched before PATH
@@ -366,6 +366,10 @@ class _Reporter:
 
     def start(self, label: str) -> None:
         self.label, self.started, self.last = label, time.monotonic(), 0.0
+        self.step(f"{label} läuft …")
+
+    def step(self, message: str) -> None:
+        self.callback(f"{self.clip_name} | {message}", False)
 
     def update(self, media_done: float, media_total: float, units_done: float, unit: str) -> None:
         now = time.monotonic()
@@ -401,12 +405,20 @@ def _config_text(path: Path) -> str:
     return str(path)
 
 
-def _execute_tool(tool: Tool, clip: Clip | None, probe_error: str | None, reporter: _Reporter) -> tuple[dict, str | None]:
+def _clip_text(clip: Clip) -> str:
+    fps = f"{float(clip.fps):.3f}".rstrip("0").rstrip(".") + " fps" if clip.fps else "ohne Bildrate"
+    counts = ", ".join(f"{len(clip.streams_of(kind))} {kind}" for kind in ("video", "audio", "subtitle")
+                       if clip.streams_of(kind))
+    return f"Länge {format_clock(clip.duration)}, {fps}, Start-TC {clip.tc(0.0)}, Streams: {counts or 'keine'}"
+
+
+def _execute_tool(tool: Tool, clip: Clip | None, probe_error: str | None, reporter: _Reporter,
+                  position: str) -> tuple[dict, str | None]:
     entry = {"name": tool.name, "kind": tool.kind, "label": tool.label, "config": _config_text(tool.config),
              "must_fail": tool.must_fail, "status": status_texts[None], "message": None, "failures": [],
              "info": [], "media_time": 0.0, "runtime": 0.0, "speed": 0.0}
     started, error, state = time.monotonic(), None, None
-    reporter.start(tool.label)
+    reporter.start(f"{position} {tool.label}")
     try:
         if clip is None:
             raise RuntimeError(f"Clip nicht lesbar: {probe_error}")
@@ -423,7 +435,7 @@ def _execute_tool(tool: Tool, clip: Clip | None, probe_error: str | None, report
         error = f"{tool.label}: {entry['message']}{detail}"
     entry["status"], entry["runtime"] = status_texts[state], time.monotonic() - started
     entry["speed"] = entry["media_time"] / entry["runtime"] if entry["runtime"] else 0.0
-    reporter.finish(f"{tool.label}  {console_texts[state]}  {entry['message'] or _timing_text(entry)}")
+    reporter.finish(f"{position} {tool.label}  {console_texts[state]}  {entry['message'] or _timing_text(entry)}")
     return entry, error
 
 
@@ -448,14 +460,17 @@ def check(clip_path: str | Path, tools: tuple[Tool, ...] | list[Tool],
         if not tools or not all(isinstance(tool, Tool) for tool in tools):
             raise ValueError("tools muss eine nicht leere Liste von AQC-Tools sein.")
         clip, probe_error = None, None
+        reporter.step("Clip wird gelesen (ffprobe) …")
         try:
             clip = _probe(path)
             result.update(start_tc=clip.tc(0.0), duration=clip.duration)
+            reporter.finish(f"Clip gelesen: {_clip_text(clip)}")
         except (ValueError, RuntimeError, OSError) as exc:
             probe_error = str(exc)
             errors.append(f"{path.name}: {probe_error}")
-        for tool in tools:
-            entry, error = _execute_tool(tool, clip, probe_error, reporter)
+            reporter.finish(f"Clip nicht lesbar: {probe_error}")
+        for number, tool in enumerate(tools, 1):
+            entry, error = _execute_tool(tool, clip, probe_error, reporter, f"[{number}/{len(tools)}]")
             result["tools"].append(entry)
             errors += [error] if error and clip is not None else []
         result["passed"] = all(entry["status"] == status_texts[True] for entry in result["tools"])

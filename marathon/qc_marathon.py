@@ -12,9 +12,9 @@ import qc_worker
 
 # --------- CONFIG ---------
 app_name = "QC Marathon"
-app_version = "2.0.0"
+app_version = "2.1.0"
 
-root_path = Path(r"\\server\share")        # like root_path in Marathon's res/config.ini
+root_path = Path(r"\\10.0.77.11\Ablage KI Proxy_1\Proxy 10 Mbit")   # like root_path in Marathon's res/config.ini
 work_dir = ".marathon"                      # like work_dir in Marathon's res/config.ini
 poll_seconds = 30
 heartbeat_seconds = 30
@@ -111,6 +111,22 @@ def _ffe_tools(image: Path, folder: Path) -> list[dict]:
 
 
 # --------- FUNC QC ---------
+def _console(message: str, done: bool) -> None:
+    if done:
+        adapter.log(message)
+    else:
+        # One clip per job, named in the "Eingang" line; the running line needs the space for progress values.
+        adapter.status(message.split(" | ", 1)[-1])
+
+
+def _size_text(path: Path) -> str:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"nicht lesbar ({exc})"
+    return f"{size / 1e9:.2f} GB" if size >= 1e9 else f"{size / 1e6:.1f} MB"
+
+
 def _job_problem(job: dict) -> str | None:
     if not isinstance(job.get("input"), str) or not job["input"]:
         return "input fehlt"
@@ -124,15 +140,21 @@ def _job_problem(job: dict) -> str | None:
 def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport:
     if problem := _job_problem(job):
         return adapter.JobReport("failed", f"Job ungültig: {problem}", qc_plan_name)
-    source = adapter.share_path(job["input"])
-    if not job["ffe_tafel"]:
-        result = qc_worker.process([source], _tools(qc_plan), output_folder, log_path=log_path)
-        return adapter.JobReport(job_status[result.state], result.summary, qc_plan_name)
+    source, is_ffe = adapter.share_path(job["input"]), job["ffe_tafel"]
+    plan_name = f"{qc_plan_name}+{ffe_plan_name}" if is_ffe else qc_plan_name
+    adapter.log(f"Clip {job.get('clip_id', '?')}, FFE-Tafel {'ja' if is_ffe else 'nein'}, Prüfplan {plan_name} "
+                f"({len(qc_plan) + (len(ffe_plan) if is_ffe else 0)} Tools)")
+    adapter.log(f"Eingang: {source}, {_size_text(source)}")
+    # log_path=None: all worker and AQC lines arrive via _console and are logged there exactly once.
+    if not is_ffe:
+        result = qc_worker.process([source], _tools(qc_plan), output_folder, on_progress=_console)
+        return adapter.JobReport(job_status[result.state], result.summary, plan_name)
     image = adapter.share_path(job["ffe_reference_image"])
+    adapter.log(f"Referenzbild: {image}, {_size_text(image)}")
     with tempfile.TemporaryDirectory(prefix="qc_marathon_") as folder:
         tools = _tools(qc_plan) + _ffe_tools(image, Path(folder))
-        result = qc_worker.process([source], tools, output_folder, log_path=log_path)
-    return adapter.JobReport(job_status[result.state], result.summary, f"{qc_plan_name}+{ffe_plan_name}")
+        result = qc_worker.process([source], tools, output_folder, on_progress=_console)
+    return adapter.JobReport(job_status[result.state], result.summary, plan_name)
 
 
 # --------- MAIN ---------

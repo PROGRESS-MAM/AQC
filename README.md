@@ -30,9 +30,25 @@ python -m marathon.qc_marathon
 Als EXE: `qc_marathon_<version>.exe` auf den Rechner kopieren und starten. Der Rechner braucht Lese- und Schreibzugriff auf die Marathon-Freigabe.
 
 - Der Worker heißt wie der Rechner. Je Rechner läuft ein Worker; ein zweiter Start mit demselben Namen bricht ab.
-- Ohne Jobs schaut er alle `poll_seconds` erneut in den Pool.
+- Ohne Jobs schaut er alle `poll_seconds` erneut in den Pool; die Konsole zeigt dann einmal `Warte auf Jobs in …`.
 - Beenden mit `Strg+C`. Ein laufender Job wird abgebrochen und beim nächsten Start als `failed` gemeldet; Marathon legt ihn neu aus.
-- Log: `qc_marathon.log` neben der EXE bzw. in `marathon/`.
+- Log: `qc_marathon.log` neben der EXE bzw. in `marathon/`; enthält alle Konsolenzeilen außer den Laufzeilen.
+
+### Konsolenausgabe
+
+Jede Zeile beginnt mit der Uhrzeit. Je Job: Übernahme, Clip mit FFE-Tafel und Prüfplan, Eingang und bei FFE-Tafel das Referenzbild jeweils mit Größe, gelesene Clipdaten, Ergebnis und Dauer je Tool (`[x/y]`), Prüfbericht und Job-Ergebnis mit Gesamtdauer.
+
+Solange ein Schritt läuft, steht darunter eine Laufzeile: Fortschrittsbalken, Prozent, Medienzeit, Datenrate (MB/s) bzw. Bildrate (fps) mit Tempo, bisherige Laufzeit und Restzeit (`ETA`). Die nächste Zeile ersetzt sie; ist sie breiter als die Konsole, wird sie in der Mitte gekürzt.
+
+```text
+11:27:33 Job a_ffe übernommen.
+11:27:33 Clip 222, FFE-Tafel ja, Prüfplan proxy_standard+ffe_tafel (5 Tools)
+11:27:33 Eingang: \\server\freigabe\…\qc\eingang\111_222_10Mbit.mp4, 76.7 MB
+11:27:33 111_222_10Mbit.mp4 | Clip gelesen: Länge 00:01:00, 25 fps, Start-TC 00:00:00:00, Streams: 1 video, 1 audio
+11:27:33 111_222_10Mbit.mp4 | [1/5] stream_specs(video_1080p)  OK  0.0s
+11:27:33 111_222_10Mbit.mp4 | [2/5] stream_specs(audio_aac_stereo)  FEHLER  0.0s
+11:27:34 [3/5] digital_silence(keine_stille) [█████░░░░░] 53% 00:00:32/00:01:00 | 40.0 MB/s 104.0x | 00:00 ETA 00:00
+```
 
 ## EXE bauen
 
@@ -126,7 +142,8 @@ print(result.state, result.summary)
 | `tools` | Liste wie `qc_plan`; `config` als Pfad zur TOML-Datei |
 | `report_folder` | Ziel der Berichte `<clip>.aqc.json`; wird angelegt; vorhandene Berichte bleiben erhalten, neue erhalten `-1`, `-2` … |
 | `recursive` | `True`: Ordner samt Unterordnern |
-| `log_path` | optionale Log-Datei |
+| `log_path` | optionale Log-Datei: Meldungen des Workers und je Clip die Ergebniszeile von AQC |
+| `on_progress` | optional `on_progress(text, done)`: erhält alle Zeilen von AQC und Worker; Laufzeilen mit `done=False`, die nächste Zeile ersetzt sie. Ohne `on_progress` gibt AQC seine Zeilen selbst in der Konsole aus |
 
 | Ergebnis | Bedeutung |
 |---|---|

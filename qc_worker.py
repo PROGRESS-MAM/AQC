@@ -5,6 +5,7 @@ from typing import Any, Callable
 import inspect
 import json
 import os
+import time
 import aqc
 import aqc.tools
 from aqc.aqc import status_texts
@@ -13,12 +14,14 @@ from toolbox import tb_write_log
 
 # --------- CONFIG ---------
 app_name = "QC Worker"
-app_version = "2.0.0"
+app_version = "2.1.0"
 
 report_suffix = ".aqc.json"
 system_files = frozenset({"thumbs.db", "desktop.ini", ".ds_store"})
 tool_keys = ("tool", "config", "must_fail")
 states = ("ok", "rejected", "error")       # also the order of severity
+
+ProgressFn = Callable[[str, bool], None]    # on_progress(text, done)
 
 
 # --------- TYPES ---------
@@ -60,6 +63,12 @@ def _log(log_path: Path | None, message: str) -> None:
         tb_write_log(log_path, message)
     except OSError as exc:
         print(f"Log nicht schreibbar: {exc}")
+
+
+def _say(log_path: Path | None, on_progress: ProgressFn | None, message: str) -> None:
+    _log(log_path, message)
+    if on_progress:
+        on_progress(message, True)
 
 
 def _ignored(path: Path) -> bool:
@@ -136,8 +145,9 @@ def _report_path(folder: Path, clip: Path, used: set[str]) -> Path:
     return path
 
 
-def _check_clip(path: Path, tools: list, report_folder: Path, used: set[str], log_path: Path | None) -> ClipResult:
-    result, progress, _ = aqc.check(path, tools)
+def _check_clip(path: Path, tools: list, report_folder: Path, used: set[str], log_path: Path | None,
+                on_progress: ProgressFn | None) -> ClipResult:
+    result, progress, _ = aqc.check(path, tools, on_progress)
     state = _clip_state(result)
     summary = _clip_summary(result, state)
     _log(log_path, progress)
@@ -146,7 +156,9 @@ def _check_clip(path: Path, tools: list, report_folder: Path, used: set[str], lo
     try:
         report.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
     except OSError as exc:
+        _say(log_path, on_progress, f"{path.name} | Bericht nicht schreibbar: {exc}")
         return ClipResult(path, "error", f"{path.name}: Bericht nicht schreibbar: {exc}", None)
+    _say(log_path, on_progress, f"{path.name} | Prüfbericht: {report}")
     return ClipResult(path, state, summary, report)
 
 
@@ -160,26 +172,34 @@ def _summary(clips: list[ClipResult]) -> str:
 
 # --------- FUNC PUBLIC ---------
 def process(sources: list[str | Path], tools: list[dict[str, Any]], report_folder: str | Path,
-            recursive: bool = False, log_path: Path | None = None) -> QCResult:
+            recursive: bool = False, log_path: Path | None = None, on_progress: ProgressFn | None = None) -> QCResult:
     """Check all files of sources with the given tools and write one JSON report per clip.
 
     sources: files and/or folders; folders without subfolders unless recursive=True; system and dot files are skipped.
     tools: [{"tool": <aqc.tools function>, "config": <name in configs/ or path to TOML>, "must_fail": bool}, ...].
     report_folder: target of <clip>.aqc.json, created if missing; existing reports are not overwritten.
+    log_path: optional log file for worker messages and one summary line per clip.
+    on_progress(text, done): optional; gets every AQC line (running lines with done=False) and all worker messages.
+    Without it AQC prints its lines to the console.
     Returns QCResult; state error if sources or tools are invalid or a clip could not be checked.
     """
-    _log(log_path, f"{app_name} {app_version} (AQC {aqc.app_version}) gestartet.")
+    _say(log_path, on_progress, f"{app_name} {app_version} (AQC {aqc.app_version}) gestartet.")
     try:
-        files, built = _collect(sources, recursive), _build_tools(tools)
+        files = _collect(sources, recursive)
+        if on_progress:
+            on_progress(f"{len(tools) if isinstance(tools, (list, tuple)) else '?'} Tools werden vorbereitet …", False)
+        started = time.monotonic()
+        built = _build_tools(tools)
         folder = Path(report_folder)
         folder.mkdir(parents=True, exist_ok=True)
     except (ValueError, OSError, RuntimeError) as exc:
-        _log(log_path, f"Prüfung nicht möglich: {exc}")
+        _say(log_path, on_progress, f"Prüfung nicht möglich: {exc}")
         return QCResult("error", f"Prüfung nicht möglich: {exc}", [], versions())
-    _log(log_path, f"{len(files)} Datei(en), {len(built)} Tools, Berichte nach {folder}")
+    _say(log_path, on_progress, f"{len(files)} Datei(en), {len(built)} Tools vorbereitet in "
+                                f"{time.monotonic() - started:.1f} s, Berichte nach {folder}")
     used: set[str] = set()
-    clips = [_check_clip(path, built, folder, used, log_path) for path in files]
+    clips = [_check_clip(path, built, folder, used, log_path, on_progress) for path in files]
     state = max((clip.state for clip in clips), key=states.index)
     result = QCResult(state, _summary(clips), clips, versions())
-    _log(log_path, f"Ergebnis {state}: {result.summary}")
+    _say(log_path, on_progress, f"Ergebnis {state}: {result.summary}")
     return result

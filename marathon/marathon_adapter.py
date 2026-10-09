@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Callable
 import json
 import os
+import shutil
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -22,7 +24,7 @@ from toolbox import tb_write_log
 
 # --------- CONFIG ---------
 app_name = "Marathon Adapter"
-app_version = "1.1.0"
+app_version = "1.1.1"
 
 schema_versions = (5,)                      # job schema versions this adapter understands
 stage_folders = {"Restore": "restore", "Transcode": "transcode", "QC": "qc"}
@@ -63,17 +65,39 @@ RunJob = Callable[[dict, Path, Path], JobReport]     # run_job(job, output_folde
 # --------- INIT ---------
 _settings: Settings | None = None
 _log_lock = threading.Lock()
+_status_width = 0                           # length of the running console line, 0 if none
 
 
 # --------- FUNC BASICS ---------
+def _print(text: str, done: bool) -> None:
+    global _status_width
+    width = max(40, shutil.get_terminal_size().columns - 1)
+    if not done and len(text) > width:
+        # A wrapped line cannot be overwritten with \r; cut the middle so start and progress values stay visible.
+        head = width * 3 // 10
+        text = f"{text[:head]}…{text[len(text) - (width - head - 1):]}"
+    print(f"\r{text}{' ' * max(0, _status_width - len(text))}", end="\n" if done else "", flush=True)
+    _status_width = 0 if done else len(text)
+
+
+def _clock() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
 def log(message: str) -> None:
-    """Print a message and append it to the adapter log."""
-    print(message, flush=True)
+    """Print a message with time (replacing a running status line) and append it to the adapter log."""
     with _log_lock:
+        _print(f"{_clock()} {message}", True)
         try:
             tb_write_log(_settings.log_path, message)
         except OSError as exc:
-            print(f"Log nicht schreibbar: {exc}", flush=True)
+            _print(f"{_clock()} Log nicht schreibbar: {exc}", True)
+
+
+def status(message: str) -> None:
+    """Show a running console line with time; the next status or log line replaces it. Not written to the log."""
+    with _log_lock:
+        _print(f"{_clock()} {message}", False)
 
 
 def worker_name() -> str:
@@ -248,8 +272,13 @@ def _claim(offen: Path, own: Path) -> Path | None:
     return None
 
 
+def _duration(seconds: float) -> str:
+    total = round(seconds)
+    return f"{total // 3600:02d}:{total // 60 % 60:02d}:{total % 60:02d}"
+
+
 def _process(job_file: Path, run_job: RunJob, heartbeat: _Heartbeat, default_reports: Path) -> None:
-    job_id = job_file.stem
+    job_id, started = job_file.stem, time.monotonic()
     heartbeat.set_job(job_id)
     log(f"Job {job_id} übernommen.")
     job, problem = _read_job(job_file)
@@ -265,7 +294,7 @@ def _process(job_file: Path, run_job: RunJob, heartbeat: _Heartbeat, default_rep
         log(f"Fehler in Job {job_id}: {exc}\n{traceback.format_exc()}")
         report = JobReport("failed", f"Fehler im Worker: {exc or type(exc).__name__}")
     _write_report(_report_folder(job, default_reports), job_id, report, heartbeat.name)
-    log(f"Job {job_id}: {report.status} - {report.result}")
+    log(f"Job {job_id}: {report.status} - {report.result} (Dauer {_duration(time.monotonic() - started)})")
     heartbeat.set_job(None)
 
 
@@ -282,6 +311,8 @@ def run(settings: Settings, run_job: RunJob) -> None:
     if not settings.poll_seconds > 0 or not 0 < settings.heartbeat_seconds <= 60:
         raise ValueError("poll_seconds muss > 0 und heartbeat_seconds 1 bis 60 sein.")
     _settings, name = settings, worker_name()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")  # progress bars must not fail on consoles without Unicode
     work = settings.root_path / settings.work_dir
     pool = work / stage_folders[settings.stage]
     offen, own, reports = pool / "offen", pool / "laufend" / name, pool / "fertig"
@@ -295,6 +326,7 @@ def run(settings: Settings, run_job: RunJob) -> None:
         own.mkdir(parents=True, exist_ok=True)
         heartbeat.start()
         _recover(own, reports, name)
+        waiting = False
         while True:
             try:
                 job_file = _claim(offen, own)
@@ -302,8 +334,12 @@ def run(settings: Settings, run_job: RunJob) -> None:
                 log(f"Pool nicht lesbar: {exc}")
                 job_file = None
             if job_file is None:
+                if not waiting:
+                    log(f"Warte auf Jobs in {offen} …")
+                    waiting = True
                 time.sleep(settings.poll_seconds)
                 continue
+            waiting = False
             _process(job_file, run_job, heartbeat, reports)
     except KeyboardInterrupt:
         log(f"Worker {name} mit Strg+C beendet. Ein abgebrochener Job wird beim nächsten Start als failed gemeldet.")
