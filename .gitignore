@@ -3,3 +3,4 @@
 *.exe
 *.json
 __pycache__
+build
