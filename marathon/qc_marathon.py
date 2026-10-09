@@ -12,7 +12,7 @@ import qc_worker
 
 # --------- CONFIG ---------
 app_name = "QC Marathon"
-app_version = "2.1.0"
+app_version = "2.1.1"
 
 root_path = Path(r"\\10.0.77.11\Ablage KI Proxy_1\Proxy 10 Mbit")   # like root_path in Marathon's res/config.ini
 work_dir = ".marathon"                      # like work_dir in Marathon's res/config.ini
@@ -111,9 +111,17 @@ def _ffe_tools(image: Path, folder: Path) -> list[dict]:
 
 
 # --------- FUNC QC ---------
+def _short_report(message: str) -> str:
+    head, sep, report = message.partition(" | Prüfbericht: ")
+    parts = Path(report).parts
+    if not sep or work_dir not in parts:
+        return message
+    return f"{head}{sep}{Path(*parts[parts.index(work_dir):])}"
+
+
 def _console(message: str, done: bool) -> None:
     if done:
-        adapter.log(message)
+        adapter.log(_short_report(message))
     else:
         # One clip per job, named in the "Eingang" line; the running line needs the space for progress values.
         adapter.status(message.split(" | ", 1)[-1])

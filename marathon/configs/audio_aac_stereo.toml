@@ -1,5 +1,5 @@
 tool     = "stream_specs"
 stream   = "audio"
 codec    = "aac"
-bitrate  = "320k"
+bitrate  = { min = "300k", max = "400k" }
 channels = 2
