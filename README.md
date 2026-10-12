@@ -86,6 +86,29 @@ Ein Eintrag in `qc_plan` oder `ffe_plan`:
 
 Beim Start prüft der Adapter, ob alle Prüftools bekannt und alle Configs vorhanden und lesbar sind. Referenzbilder von Configs in `qc_plan` müssen neben der Config liegen; das Referenzbild der Tools in `ffe_plan` kommt aus dem Job.
 
+## Prüftool `digital_silence`
+
+Prüft, ob jeder Kanal jedes Audiostreams Ton enthält. Jeder Kanal wird in Fenster der Länge `window` geteilt; ein Fenster zählt als Ton, wenn sein Pegel (RMS) mindestens `threshold` erreicht. Ist der Anteil der Fenster mit Ton an der Länge des Audiostreams kleiner als `min_active`, gilt der Kanal als stumm und das Tool ist nicht bestanden.
+
+```toml
+tool       = "digital_silence"
+threshold  = "-60dB"
+min_active = "1%"
+window     = "1s"
+```
+
+| Eintrag | Pflicht | Bedeutung |
+|---|---|---|
+| `tool` | ja | `digital_silence` |
+| `threshold` | ja | Pegelschwelle in dBFS (RMS je Fenster, Vollaussteuerung = 0 dBFS), kleiner als 0; z. B. `"-60dB"` oder `-60` |
+| `min_active` | ja | Mindestanteil mit Ton je Kanal in Prozent, größer als 0 bis 100; z. B. `"1%"` oder `1` |
+| `window` | nein | Fensterlänge, z. B. `"1s"` oder `0.5`; Standard `1s`. Ein Geräusch zählt immer als ganzes Fenster |
+
+Im Prüfbericht:
+
+- `failures`: je stummem Kanal ein Eintrag mit `criterion` `min_active`, `stream`, `channel` (ab 1) und dem gemessenen Anteil unter `actual`.
+- `info`: je Audiostream eine Zeile `Stream <n> Ist-Werte: Kanal 1 Ton=99.95% Spitze=-10.2 dBFS, …`; ein Kanal nur mit digitalen Nullen hat `Spitze=-inf dBFS`.
+
 ## FFE-Tafel
 
 Marathon entscheidet je Clip, ob er die FFE-Tafel braucht, und schreibt das als `ffe_tafel` in den QC-Job. Jobs mit `"ffe_tafel": true` werden nach dem Standard-Prüfplan zusätzlich mit `ffe_plan` geprüft, alle anderen nur mit `qc_plan`.

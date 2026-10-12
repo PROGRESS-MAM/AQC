@@ -17,7 +17,7 @@ import traceback
 
 # --------- CONFIG ---------
 app_name = "AQC"
-app_version = "0.3.1"
+app_version = "0.4.0"
 
 config_folder = "configs"
 res_name = "res"            # folder with ffmpeg/ffprobe, searched before PATH

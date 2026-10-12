@@ -1,3 +1,4 @@
-tool         = "digital_silence"
-min_duration = "0.1s"
-expected     = ["start+5s", "end-50s"]
+tool       = "digital_silence"
+threshold  = "-60dB"
+min_active = "1%"
+window     = "1s"
