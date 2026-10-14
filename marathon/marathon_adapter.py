@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+import ctypes
 import json
 import os
 import shutil
@@ -24,9 +25,9 @@ from toolbox import tb_write_log
 
 # --------- CONFIG ---------
 app_name = "Marathon Adapter"
-app_version = "1.1.1"
+app_version = "1.2.0"
 
-schema_versions = (5,)                      # job schema versions this adapter understands
+schema_versions = (6,)                      # job schema versions this adapter understands
 stage_folders = {"Restore": "restore", "Transcode": "transcode", "QC": "qc"}
 report_statuses = ("ok", "failed", "rejected")
 worker_dir = "worker"
@@ -41,7 +42,10 @@ invalid_name_chars = frozenset('<>:"/\\|?*' + "".join(map(chr, range(32))))
 # --------- TYPES ---------
 @dataclass(frozen=True)
 class Settings:
-    """Fixed settings of one stage adapter; root_path and work_dir as in Marathon's res/config.ini."""
+    """Fixed settings of one stage adapter; root_path and work_dir as in Marathon's res/config.ini.
+
+    resume=True hands own jobs left in laufend/<worker>/ without report out again instead of reporting them failed.
+    """
     root_path: Path
     work_dir: str
     stage: str                              # "Restore" | "Transcode" | "QC"
@@ -49,14 +53,27 @@ class Settings:
     heartbeat_seconds: float                # at most 60
     log_path: Path
     versions: dict[str, str] = field(default_factory=dict)
+    resume: bool = False
 
 
 @dataclass(frozen=True)
 class JobReport:
-    """Answer of the stage adapter for one job; result is required unless status is ok."""
+    """Answer of the stage adapter for one job; result is required unless status is ok.
+
+    items (Restore) and new_master (Transcode) are written to the report only when set.
+    """
     status: str                             # "ok" | "failed" | "rejected" (QC only)
     result: str = ""
     preset: str | None = None
+    items: list[dict] | None = None
+    new_master: str | None = None
+
+
+@dataclass(frozen=True)
+class ClaimedJob:
+    """Job taken by claim(); output_folder exists."""
+    job: dict
+    output_folder: Path
 
 
 RunJob = Callable[[dict, Path, Path], JobReport]     # run_job(job, output_folder, log_path)
@@ -64,20 +81,46 @@ RunJob = Callable[[dict, Path, Path], JobReport]     # run_job(job, output_folde
 
 # --------- INIT ---------
 _settings: Settings | None = None
+_pool: "_Pool | None" = None
 _log_lock = threading.Lock()
-_status_width = 0                           # length of the running console line, 0 if none
+_block_lines = _block_width = 0             # running status block in the console, 0 lines if none
 
 
-# --------- FUNC BASICS ---------
+# --------- FUNC CONSOLE ---------
+def _enable_ansi() -> None:
+    # Moving up over a multi line status block needs VT sequences, off by default in older Windows consoles.
+    if os.name != "nt":
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle, mode = kernel32.GetStdHandle(-11), ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)    # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except (AttributeError, OSError):
+        pass
+
+
+def _fit(line: str, width: int) -> str:
+    # A wrapped line cannot be overwritten; cut the middle so start and progress values stay visible.
+    if len(line) <= width:
+        return line
+    head = width * 3 // 10
+    return f"{line[:head]}…{line[len(line) - (width - head - 1):]}"
+
+
 def _print(text: str, done: bool) -> None:
-    global _status_width
-    width = max(40, shutil.get_terminal_size().columns - 1)
-    if not done and len(text) > width:
-        # A wrapped line cannot be overwritten with \r; cut the middle so start and progress values stay visible.
-        head = width * 3 // 10
-        text = f"{text[:head]}…{text[len(text) - (width - head - 1):]}"
-    print(f"\r{text}{' ' * max(0, _status_width - len(text))}", end="\n" if done else "", flush=True)
-    _status_width = 0 if done else len(text)
+    """Replace the running status block with text; done=False keeps text as the new block."""
+    global _block_lines, _block_width
+    if _block_lines > 1:
+        clear = f"\x1b[{_block_lines - 1}F\x1b[J"
+    else:
+        clear = f"\r{' ' * _block_width}\r" if _block_lines else ""
+    lines = text.split("\n")
+    if not done:
+        width = max(40, shutil.get_terminal_size().columns - 1)
+        lines = [_fit(line, width) for line in lines]
+    print(clear + "\n".join(lines), end="\n" if done else "", flush=True)
+    _block_lines, _block_width = (0, 0) if done or not text else (len(lines), len(lines[-1]))
 
 
 def _clock() -> str:
@@ -85,7 +128,7 @@ def _clock() -> str:
 
 
 def log(message: str) -> None:
-    """Print a message with time (replacing a running status line) and append it to the adapter log."""
+    """Print a message with time (replacing a running status block) and append it to the adapter log."""
     with _log_lock:
         _print(f"{_clock()} {message}", True)
         try:
@@ -95,30 +138,41 @@ def log(message: str) -> None:
 
 
 def status(message: str) -> None:
-    """Show a running console line with time; the next status or log line replaces it. Not written to the log."""
-    with _log_lock:
-        _print(f"{_clock()} {message}", False)
+    """Show a running status block in the console, lines separated by "\\n", time before the first line.
 
-
-def worker_name() -> str:
-    """Name of this worker: the computer name, usable as file name."""
-    name = "".join("_" if char in invalid_name_chars else char for char in socket.gethostname()).strip().rstrip(". ")
-    return name or "worker"
-
-
-def share_path(relative: str) -> Path:
-    """Path on the share for a job path relative to root_path with "/" as separator.
-
-    Raises ValueError for empty, absolute or '..' paths.
+    The next status or log call replaces the whole block; an empty message removes it. Not written to the log.
     """
-    parts = str(relative or "").replace("\\", "/").split("/")
-    if any(part in ("", ".", "..") for part in parts) or ":" in parts[0]:
-        raise ValueError(f"Unzulässiger Pfad im Job: {relative!r}")
-    return _settings.root_path.joinpath(*parts)
+    with _log_lock:
+        _print(f"{_clock()} {message}" if message.strip() else "", False)
+
+
+# --------- FUNC BASICS ---------
+def worker_name() -> str:
+    """Name of this worker: <computer name>-<stage>, usable as file name. Only after run or run_stream started."""
+    if _settings is None:
+        raise RuntimeError("worker_name() erst nach dem Start mit run oder run_stream verfügbar.")
+    name = f"{socket.gethostname()}-{_settings.stage}"
+    return "".join("_" if char in invalid_name_chars else char for char in name).strip().rstrip(". ")
+
+
+def share_path(path: str) -> Path:
+    """Path named by Marathon: relative to root_path with "/" as separator, or a full path used unchanged.
+
+    Raises ValueError for an empty path.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError(f"Leerer Pfad im Job: {path!r}")
+    # pathlib keeps a full path (drive or UNC) and ignores root_path then.
+    return _settings.root_path / path.replace("\\", "/")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _duration(seconds: float) -> str:
+    total = round(seconds)
+    return f"{total // 3600:02d}:{total // 60 % 60:02d}:{total % 60:02d}"
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -142,7 +196,7 @@ def _write_json(path: Path, data: dict) -> None:
 # --------- FUNC HEARTBEAT ---------
 class _Heartbeat:
     def __init__(self, path: Path, name: str) -> None:
-        self.path, self.name, self.job_id, self.count = path, name, None, 0
+        self.path, self.name, self.job_ids, self.count = path, name, [], 0
         self.instance, self.lock, self.stopped = uuid.uuid4().hex, threading.Lock(), threading.Event()
         self.thread = threading.Thread(target=self._loop, daemon=True)
 
@@ -150,22 +204,29 @@ class _Heartbeat:
         with self.lock:
             self.count += 1
             _write_json(self.path, {"worker": self.name, "stage": _settings.stage, "host": socket.gethostname(),
-                                    "job_id": self.job_id, "beat": f"{_now()} #{self.count}",
-                                    "instance": self.instance, "versions": _settings.versions})
+                                    "job_id": self.job_ids[0] if self.job_ids else None, "job_ids": list(self.job_ids),
+                                    "beat": f"{_now()} #{self.count}", "instance": self.instance,
+                                    "versions": _settings.versions})
 
-    def set_job(self, job_id: str | None) -> None:
-        self.job_id = job_id
+    def _safe_write(self) -> None:
         try:
             self.write()
         except OSError as exc:
             log(f"Heartbeat nicht schreibbar: {exc}")
 
+    def add(self, job_id: str) -> None:
+        with self.lock:
+            self.job_ids.append(job_id)
+        self._safe_write()
+
+    def remove(self, job_id: str) -> None:
+        with self.lock:
+            self.job_ids.remove(job_id)
+        self._safe_write()
+
     def _loop(self) -> None:
         while not self.stopped.wait(_settings.heartbeat_seconds):
-            try:
-                self.write()
-            except OSError as exc:
-                log(f"Heartbeat nicht schreibbar: {exc}")
+            self._safe_write()
 
     def start(self) -> None:
         self.write()
@@ -224,16 +285,19 @@ def _report_folder(job: dict | None, default: Path) -> Path:
 
 
 def _checked(report: JobReport) -> JobReport:
-    if not isinstance(report, JobReport) or report.status not in report_statuses:
+    if (not isinstance(report, JobReport) or report.status not in report_statuses
+            or not (report.items is None or isinstance(report.items, list) and all(isinstance(item, dict) for item in report.items))
+            or not (report.new_master is None or isinstance(report.new_master, str))):
         return JobReport("failed", f"Ungültiges Ergebnis des Stage-Adapters: {report!r}")
     if report.status != "ok" and not str(report.result or "").strip():
-        return JobReport(report.status, "ohne Angabe", report.preset)
+        return JobReport(report.status, "ohne Angabe", report.preset, report.items, report.new_master)
     return report
 
 
 def _write_report(folder: Path, job_id: str, report: JobReport, name: str) -> None:
     """Write the report; keeps trying while the share is unavailable, no new job is taken meanwhile."""
     data = {"job_id": job_id, "status": report.status, "result": str(report.result or ""), "preset": report.preset,
+            **{key: value for key, value in (("items", report.items), ("new_master", report.new_master)) if value is not None},
             "worker": name, "versions": _settings.versions}
     while True:
         try:
@@ -245,18 +309,7 @@ def _write_report(folder: Path, job_id: str, report: JobReport, name: str) -> No
             time.sleep(_settings.poll_seconds)
 
 
-def _recover(own: Path, default_reports: Path, name: str) -> None:
-    """Report own jobs left from an earlier run as failed, Marathon then creates a new attempt."""
-    for job_file in sorted(path for path in own.glob("*.json") if not path.name.startswith(".")):
-        job, _ = _read_job(job_file)
-        folder = _report_folder(job, default_reports)
-        if (folder / f"{job_file.stem}.json").exists():
-            continue
-        _write_report(folder, job_file.stem, JobReport("failed", "Worker neu gestartet; Job wurde abgebrochen."), name)
-        log(f"Job {job_file.stem} aus vorherigem Lauf als failed gemeldet.")
-
-
-def _claim(offen: Path, own: Path) -> Path | None:
+def _claim_file(offen: Path, own: Path) -> Path | None:
     """Take the first job by renaming it into the own folder; the rename is the lock between workers."""
     names = sorted(entry.name for entry in os.scandir(offen)
                    if entry.is_file() and entry.name.casefold().endswith(".json") and not entry.name.startswith("."))
@@ -272,76 +325,161 @@ def _claim(offen: Path, own: Path) -> Path | None:
     return None
 
 
-def _duration(seconds: float) -> str:
-    total = round(seconds)
-    return f"{total // 3600:02d}:{total // 60 % 60:02d}:{total % 60:02d}"
+# --------- FUNC POOL ---------
+class _Pool:
+    """Claimed jobs of this worker between claim() and report()."""
 
+    def __init__(self, settings: Settings) -> None:
+        self.name = worker_name()
+        self.work = settings.root_path / settings.work_dir
+        folder = self.work / stage_folders[settings.stage]
+        self.offen, self.own, self.reports = folder / "offen", folder / "laufend" / self.name, folder / "fertig"
+        self.heartbeat = _Heartbeat(self.work / worker_dir / f"{self.name}.json", self.name)
+        self.jobs: dict[str, tuple[dict | None, float]] = {}
+        self.resumed: list[Path] = []
+        self.lock, self.waiting = threading.RLock(), False   # claim() reports invalid jobs itself
 
-def _process(job_file: Path, run_job: RunJob, heartbeat: _Heartbeat, default_reports: Path) -> None:
-    job_id, started = job_file.stem, time.monotonic()
-    heartbeat.set_job(job_id)
-    log(f"Job {job_id} übernommen.")
-    job, problem = _read_job(job_file)
-    problem = problem or _job_problem(job, job_file)
-    try:
-        if problem:
-            report = JobReport("failed", f"Job ungültig: {problem}")
-        else:
-            output = share_path(job["output_folder"])
-            output.mkdir(parents=True, exist_ok=True)
-            report = _checked(run_job(job, output, _settings.log_path))
-    except Exception as exc:
-        log(f"Fehler in Job {job_id}: {exc}\n{traceback.format_exc()}")
-        report = JobReport("failed", f"Fehler im Worker: {exc or type(exc).__name__}")
-    _write_report(_report_folder(job, default_reports), job_id, report, heartbeat.name)
-    log(f"Job {job_id}: {report.status} - {report.result} (Dauer {_duration(time.monotonic() - started)})")
-    heartbeat.set_job(None)
+    def left_over(self) -> list[Path]:
+        """Own job files from an earlier run without report, sorted by name."""
+        files = sorted(path for path in self.own.glob("*.json") if not path.name.startswith("."))
+        return [path for path in files if not (_report_folder(_read_job(path)[0], self.reports) / path.name).exists()]
+
+    def recover(self) -> None:
+        """Report left over jobs as failed (Marathon then creates a new attempt) or keep them for claim()."""
+        if _settings.resume:
+            self.resumed = self.left_over()
+            if self.resumed:
+                log(f"{len(self.resumed)} Jobs aus vorherigem Lauf werden wieder aufgenommen.")
+            return
+        for job_file in self.left_over():
+            job, _ = _read_job(job_file)
+            report = JobReport("failed", "Worker neu gestartet; Job wurde abgebrochen.")
+            _write_report(_report_folder(job, self.reports), job_file.stem, report, self.name)
+            log(f"Job {job_file.stem} aus vorherigem Lauf als failed gemeldet.")
+
+    def next_file(self) -> Path | None:
+        if self.resumed:
+            return self.resumed.pop(0)
+        try:
+            job_file = _claim_file(self.offen, self.own)
+        except OSError as exc:
+            log(f"Pool nicht lesbar: {exc}")
+            return None
+        if job_file is None and not self.waiting:
+            log(f"Warte auf Jobs in {self.offen} …")
+        self.waiting = job_file is None
+        return job_file
+
+    def claim(self) -> ClaimedJob | None:
+        with self.lock:
+            while job_file := self.next_file():
+                job_id = job_file.stem
+                job, problem = _read_job(job_file)
+                self.jobs[job_id] = (job, time.monotonic())
+                self.heartbeat.add(job_id)
+                log(f"Job {job_id} übernommen.")
+                if problem := problem or _job_problem(job, job_file):
+                    self.report(job_id, JobReport("failed", f"Job ungültig: {problem}"))
+                    continue
+                try:
+                    output = share_path(job["output_folder"])
+                    output.mkdir(parents=True, exist_ok=True)
+                except (OSError, ValueError) as exc:
+                    self.report(job_id, JobReport("failed", f"Fehler im Worker: {exc}"))
+                    continue
+                return ClaimedJob(job, output)
+            return None
+
+    def report(self, job_id: str, report: JobReport) -> None:
+        with self.lock:
+            if job_id not in self.jobs:
+                raise ValueError(f"Job {job_id!r} wurde nicht mit claim() übernommen oder ist schon gemeldet.")
+            (job, started), report = self.jobs.pop(job_id), _checked(report)
+            _write_report(_report_folder(job, self.reports), job_id, report, self.name)
+            log(f"Job {job_id}: {report.status} - {report.result} (Dauer {_duration(time.monotonic() - started)})")
+            self.heartbeat.remove(job_id)
 
 
 # --------- FUNC PUBLIC ---------
-def run(settings: Settings, run_job: RunJob) -> None:
-    """Work on the Marathon pool of settings.stage until Ctrl+C.
+def claim() -> ClaimedJob | None:
+    """Next job of the pool (resumed jobs first) or None if none is available; only inside run_stream.
 
-    run_job(job, output_folder, log_path) does the stage work and returns a JobReport; exceptions become failed.
-    Raises ValueError or RuntimeError if the settings or the pool folders are not usable.
+    Invalid jobs are reported as failed by the adapter and skipped.
     """
-    global _settings
+    if _pool is None:
+        raise RuntimeError("claim() nur innerhalb von run_stream verfügbar.")
+    return _pool.claim()
+
+
+def report(job_id: str, job_report: JobReport) -> None:
+    """Write the report of a claimed job and remove it from the heartbeat; only inside run_stream.
+
+    Raises ValueError if job_id was not claimed or is already reported.
+    """
+    if _pool is None:
+        raise RuntimeError("report() nur innerhalb von run_stream verfügbar.")
+    _pool.report(job_id, job_report)
+
+
+def run_stream(settings: Settings, work: Callable[[], object]) -> None:
+    """Start the worker of settings.stage and call work(); work uses claim() and report() until Ctrl+C.
+
+    Returns when work() returns. Jobs without report stay in laufend/<worker>/ for the next start.
+    Raises ValueError or RuntimeError if the settings or the pool folders are not usable; exceptions of work() pass.
+    """
+    global _settings, _pool
     if settings.stage not in stage_folders:
         raise ValueError(f"Unbekannte Stage {settings.stage!r}, erlaubt: {', '.join(stage_folders)}.")
     if not settings.poll_seconds > 0 or not 0 < settings.heartbeat_seconds <= 60:
         raise ValueError("poll_seconds muss > 0 und heartbeat_seconds 1 bis 60 sein.")
-    _settings, name = settings, worker_name()
+    _settings = settings
+    pool = _Pool(settings)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # progress bars must not fail on consoles without Unicode
-    work = settings.root_path / settings.work_dir
-    pool = work / stage_folders[settings.stage]
-    offen, own, reports = pool / "offen", pool / "laufend" / name, pool / "fertig"
-    log(f"{app_name} {app_version} gestartet: Worker {name}, Stage {settings.stage}, Pool {pool}, "
+    if sys.stdout.isatty():
+        _enable_ansi()
+    log(f"{app_name} {app_version} gestartet: Worker {pool.name}, Stage {settings.stage}, "
+        f"Pool {pool.offen.parent}, Wiederaufnahme {'ein' if settings.resume else 'aus'}, "
         f"Versionen {', '.join(f'{key} {value}' for key, value in settings.versions.items())}")
-    if missing := [str(folder) for folder in (offen, work / worker_dir) if not folder.is_dir()]:
+    if missing := [str(folder) for folder in (pool.offen, pool.work / worker_dir) if not folder.is_dir()]:
         raise RuntimeError(f"Ordner fehlt: {', '.join(missing)} - Marathon legt ihn mit 'run' oder 'create-folders' an.")
-    heartbeat = _Heartbeat(work / worker_dir / f"{name}.json", name)
     try:
-        _ensure_unique(heartbeat.path, name)
-        own.mkdir(parents=True, exist_ok=True)
-        heartbeat.start()
-        _recover(own, reports, name)
-        waiting = False
+        _ensure_unique(pool.heartbeat.path, pool.name)
+        pool.own.mkdir(parents=True, exist_ok=True)
+        pool.heartbeat.start()
+        _pool = pool
+        pool.recover()
+        work()
+        log(f"Worker {pool.name} beendet.")
+    except KeyboardInterrupt:
+        later = "wieder aufgenommen" if settings.resume else "als failed gemeldet"
+        log(f"Worker {pool.name} mit Strg+C beendet. Offene Jobs werden beim nächsten Start {later}.")
+    except Exception as exc:
+        log(f"Worker {pool.name} mit Fehler beendet: {exc}. Offene Jobs bleiben in {pool.own}.")
+        raise
+    finally:
+        _pool = None
+        pool.heartbeat.stop()
+
+
+def run(settings: Settings, run_job: RunJob) -> None:
+    """Work on the Marathon pool of settings.stage one job at a time until Ctrl+C.
+
+    run_job(job, output_folder, log_path) does the stage work and returns a JobReport; exceptions become failed.
+    Raises ValueError or RuntimeError if the settings or the pool folders are not usable.
+    """
+    def work() -> None:
         while True:
-            try:
-                job_file = _claim(offen, own)
-            except OSError as exc:
-                log(f"Pool nicht lesbar: {exc}")
-                job_file = None
-            if job_file is None:
-                if not waiting:
-                    log(f"Warte auf Jobs in {offen} …")
-                    waiting = True
+            claimed = claim()
+            if claimed is None:
                 time.sleep(settings.poll_seconds)
                 continue
-            waiting = False
-            _process(job_file, run_job, heartbeat, reports)
-    except KeyboardInterrupt:
-        log(f"Worker {name} mit Strg+C beendet. Ein abgebrochener Job wird beim nächsten Start als failed gemeldet.")
-    finally:
-        heartbeat.stop()
+            job_id = claimed.job["job_id"]
+            try:
+                job_report = run_job(claimed.job, claimed.output_folder, settings.log_path)
+            except Exception as exc:
+                log(f"Fehler in Job {job_id}: {exc}\n{traceback.format_exc()}")
+                job_report = JobReport("failed", f"Fehler im Worker: {exc or type(exc).__name__}")
+            report(job_id, job_report)
+
+    run_stream(settings, work)
