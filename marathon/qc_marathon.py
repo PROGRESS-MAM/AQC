@@ -12,7 +12,7 @@ import qc_worker
 
 # --------- CONFIG ---------
 app_name = "QC Marathon"
-app_version = "2.2.0"
+app_version = "2.2.1"
 
 root_path = Path(r"\\10.0.77.11\Ablage KI Proxy_1\Proxy 10 Mbit")   # like root_path in Marathon's res/config.ini
 work_dir = ".marathon"                      # like work_dir in Marathon's res/config.ini
@@ -111,12 +111,14 @@ def _ffe_tools(image: Path, folder: Path) -> list[dict]:
 
 
 # --------- FUNC QC ---------
+def _short_path(path: str | Path) -> Path:
+    parts = Path(path).parts
+    return Path(*parts[parts.index(work_dir):]) if work_dir in parts else Path(path)
+
+
 def _short_report(message: str) -> str:
     head, sep, report = message.partition(" | Prüfbericht: ")
-    parts = Path(report).parts
-    if not sep or work_dir not in parts:
-        return message
-    return f"{head}{sep}{Path(*parts[parts.index(work_dir):])}"
+    return f"{head}{sep}{_short_path(report)}" if sep else message
 
 
 def _console(message: str, done: bool) -> None:
@@ -152,13 +154,13 @@ def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport
     plan_name = f"{qc_plan_name}+{ffe_plan_name}" if is_ffe else qc_plan_name
     adapter.log(f"Clip {job.get('clip_id', '?')}, FFE-Tafel {'ja' if is_ffe else 'nein'}, Prüfplan {plan_name} "
                 f"({len(qc_plan) + (len(ffe_plan) if is_ffe else 0)} Tools)")
-    adapter.log(f"Eingang: {source}, {_size_text(source)}")
+    adapter.log(f"Eingang: {_short_path(source)}, {_size_text(source)}")
     # log_path=None: all worker and AQC lines arrive via _console and are logged there exactly once.
     if not is_ffe:
         result = qc_worker.process([source], _tools(qc_plan), output_folder, on_progress=_console)
         return adapter.JobReport(job_status[result.state], result.summary, plan_name)
     image = adapter.share_path(job["ffe_reference_image"])
-    adapter.log(f"Referenzbild: {image}, {_size_text(image)}")
+    adapter.log(f"Referenzbild: {_short_path(image)}, {_size_text(image)}")
     with tempfile.TemporaryDirectory(prefix="qc_marathon_") as folder:
         tools = _tools(qc_plan) + _ffe_tools(image, Path(folder))
         result = qc_worker.process([source], tools, output_folder, on_progress=_console)

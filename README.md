@@ -29,7 +29,8 @@ python -m marathon.qc_marathon
 
 Als EXE: `qc_marathon_<version>.exe` auf den Rechner kopieren und starten. Der Rechner braucht Lese- und Schreibzugriff auf die Marathon-Freigabe.
 
-- Der Worker heißt wie der Rechner. Je Rechner läuft ein Worker; ein zweiter Start mit demselben Namen bricht ab.
+- Der Worker heißt `<Rechnername>-QC`. Je Rechner läuft ein QC-Worker; ein zweiter Start auf demselben Rechner bricht ab.
+- Vor dem ersten Start mit QC Marathon 2.2.1: alte Datei `<work_dir>/worker/<Rechnername>.json` und Ordner `<work_dir>/qc/laufend/<Rechnername>/` löschen.
 - Ohne Jobs schaut er alle `poll_seconds` erneut in den Pool; die Konsole zeigt dann einmal `Warte auf Jobs in …`.
 - Beenden mit `Strg+C`. Ein laufender Job wird abgebrochen und beim nächsten Start als `failed` gemeldet; Marathon legt ihn neu aus.
 - Log: `qc_marathon.log` neben der EXE bzw. in `marathon/`; enthält alle Konsolenzeilen außer den Laufzeilen.
@@ -38,12 +39,12 @@ Als EXE: `qc_marathon_<version>.exe` auf den Rechner kopieren und starten. Der R
 
 Jede Zeile beginnt mit der Uhrzeit. Je Job: Übernahme, Clip mit FFE-Tafel und Prüfplan, Eingang und bei FFE-Tafel das Referenzbild jeweils mit Größe, gelesene Clipdaten, Ergebnis und Dauer je Tool (`[x/y]`), Prüfbericht und Job-Ergebnis mit Gesamtdauer.
 
-Solange ein Schritt läuft, steht darunter eine Laufzeile: Fortschrittsbalken, Prozent, Medienzeit, Datenrate (MB/s) bzw. Bildrate (fps) mit Tempo, bisherige Laufzeit und Restzeit (`ETA`). Die nächste Zeile ersetzt sie; ist sie breiter als die Konsole, wird sie in der Mitte gekürzt.
+Solange ein Schritt läuft, steht darunter eine Laufzeile: Fortschrittsbalken, Prozent, Medienzeit, Datenrate (MB/s) bzw. Bildrate (fps) mit Tempo, bisherige Laufzeit und Restzeit (`ETA`). Die nächste Zeile ersetzt sie; ist sie breiter als die Konsole, wird sie in der Mitte gekürzt. Pfade in den Zeilen von AQC beginnen ab `.marathon`, z. B. `.marathon\qc\…`.
 
 ```text
 11:27:33 Job a_ffe übernommen.
 11:27:33 Clip 222, FFE-Tafel ja, Prüfplan proxy_standard+ffe_tafel (5 Tools)
-11:27:33 Eingang: \\server\freigabe\…\qc\eingang\111_222_10Mbit.mp4, 76.7 MB
+11:27:33 Eingang: .marathon\qc\eingang\111_222_10Mbit.mp4, 76.7 MB
 11:27:33 111_222_10Mbit.mp4 | Clip gelesen: Länge 00:01:00, 25 fps, Start-TC 00:00:00:00, Streams: 1 video, 1 audio
 11:27:33 111_222_10Mbit.mp4 | [1/5] stream_specs(video_1080p)  OK  0.0s
 11:27:33 111_222_10Mbit.mp4 | [2/5] stream_specs(audio_aac_stereo)  FEHLER  0.0s
@@ -140,14 +141,14 @@ Fehlt die Tafel am Anfang oder ist sie am Ende vorhanden, ist der Job `rejected`
 | Pfad | Verwendung |
 |---|---|
 | `<work_dir>/qc/offen/` | Jobs abholen |
-| `<work_dir>/qc/laufend/<Rechnername>/` | übernommene Jobs |
+| `<work_dir>/qc/laufend/<Rechnername>-QC/` | übernommene Jobs |
 | `<work_dir>/qc/fertig/` | Reports an Marathon |
-| `<work_dir>/worker/<Rechnername>.json` | Heartbeat mit laufendem Job und Versionen |
+| `<work_dir>/worker/<Rechnername>-QC.json` | Heartbeat mit laufendem Job (`job_id`, `job_ids`) und Versionen |
 | `ffe_reference_image` aus dem Job | Referenzbild der FFE-Tafel, wird nur gelesen |
 | `input` aus dem Job | Proxy, wird nur gelesen |
 | `output_folder` aus dem Job | Prüfberichte |
 
-Der Adapter verarbeitet nur Jobs mit `schema_version = 5`.
+Der Adapter verarbeitet nur Jobs mit `schema_version = 6`.
 
 ## QC-Worker direkt einbinden
 
@@ -166,7 +167,7 @@ print(result.state, result.summary)
 | `report_folder` | Ziel der Berichte `<clip>.aqc.json`; wird angelegt; vorhandene Berichte bleiben erhalten, neue erhalten `-1`, `-2` … |
 | `recursive` | `True`: Ordner samt Unterordnern |
 | `log_path` | optionale Log-Datei: Meldungen des Workers und je Clip die Ergebniszeile von AQC |
-| `on_progress` | optional `on_progress(text, done)`: erhält alle Zeilen von AQC und Worker; Laufzeilen mit `done=False`, die nächste Zeile ersetzt sie. Ohne `on_progress` gibt AQC seine Zeilen selbst in der Konsole aus |
+| `on_progress` | optional `on_progress(text, done)`: erhält alle Zeilen von AQC und Worker; Laufzeilen mit `done=False`, die nächste Zeile ersetzt sie. Ohne `on_progress` gibt AQC seine Zeilen selbst in der Konsole aus. Pfade in AQC-Zeilen sind ab `.marathon` gekürzt |
 
 | Ergebnis | Bedeutung |
 |---|---|

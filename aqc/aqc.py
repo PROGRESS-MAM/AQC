@@ -17,7 +17,7 @@ import traceback
 
 # --------- CONFIG ---------
 app_name = "AQC"
-app_version = "0.4.0"
+app_version = "0.4.1"
 
 config_folder = "configs"
 res_name = "res"            # folder with ffmpeg/ffprobe, searched before PATH
@@ -25,9 +25,16 @@ bar_width = 10
 progress_interval = 0.1     # seconds between updates of the running line
 status_texts = {True: "BESTANDEN", False: "NICHT BESTANDEN", None: "NICHT AUSFÜHRBAR"}
 console_texts = {True: "OK", False: "FEHLER", None: "NICHT AUSFÜHRBAR"}
+short_from = ".marathon"    # console paths are cut to start at this folder
 
 
 # --------- STATIC ---------
+_path_start = r"(?:[A-Za-z]:[\\/]|\\\\|//|(?<![\w.])/)"
+# From a path start up to the folder before short_from; stops at the start of a following path.
+_short_pattern = re.compile(_path_start + r"(?:(?!\s" + _path_start + r")[^\n\r\"'])*?[\\/](?="
+                            + re.escape(short_from) + r"(?:[\\/]|$|[^\w.-]))")
+
+
 class _MustFail:
     def __repr__(self) -> str:
         return "must_fail"
@@ -357,7 +364,9 @@ def _probe(path: Path) -> Clip:
 # --------- FUNC PROGRESS ---------
 class _Reporter:
     def __init__(self, clip_name: str, on_progress: Callable[[str, bool], None] | None) -> None:
-        self.clip_name, self.callback, self.width = clip_name, on_progress or self._console, 0
+        output = on_progress or self._console
+        self.clip_name, self.width = clip_name, 0
+        self.callback = lambda message, done: output(_short_pattern.sub("", message), done)
         self.label, self.started, self.last = "", 0.0, 0.0
 
     def _console(self, message: str, done: bool) -> None:
