@@ -1,10 +1,13 @@
 # --------- IMPORTS ---------
+from contextlib import nullcontext
 from pathlib import Path
 import json
 import sys
 import tempfile
 import tomllib
 import traceback
+import aqc
+from aqc.aqc import status_texts
 from toolbox import tb_write_log
 from marathon import marathon_adapter as adapter
 import qc_worker
@@ -53,12 +56,37 @@ main_log = _run_folder() / "qc_marathon.log"
 
 
 # --------- FUNC PLAN ---------
+def expected_silence(job: dict) -> bool:
+    collection, identifier = job.get("collection"), job.get("identifier")
+    return (isinstance(collection, str) and isinstance(identifier, str)
+            and collection == "LYNXarchive" and identifier.strip().startswith("LA"))
+
+
 def _tools(plan: list[dict]) -> list[dict]:
     return [{**entry, "config": config_folder / f"{entry['config']}.toml"} for entry in plan]
 
 
 def _read_config(config: Path) -> dict:
     return tomllib.loads(config.read_text(encoding="utf-8"))
+
+
+def _tools_for_job(job: dict, is_silent: bool, folder: Path | None = None) -> list[dict]:
+    tools = _tools(qc_plan)
+    if not (expected_silence(job) and is_silent):
+        return tools
+    if folder is None:
+        raise ValueError("Temporärer Ordner für die Stille-Ausnahme fehlt.")
+    for entry in tools:
+        if entry["tool"] != "stream_specs" or entry["config"].stem != "audio_aac_stereo":
+            continue
+        data = _read_config(entry["config"])
+        data.pop("bitrate", None)
+        entry["config"] = folder / entry["config"].name
+        entry["config"].write_text(
+            "".join(f"{key} = {_toml_value(value)}\n" for key, value in data.items()),
+            encoding="utf-8",
+        )
+    return [entry for entry in tools if entry["tool"] != "digital_silence"]
 
 
 def _config_problems(config: Path, check_frames: bool) -> list[str]:
@@ -137,6 +165,24 @@ def _size_text(path: Path) -> str:
     return f"{size / 1e9:.2f} GB" if size >= 1e9 else f"{size / 1e6:.1f} MB"
 
 
+def _measured_silent(source: Path) -> bool:
+    silence_config = config_folder / "keine_stille.toml"
+    silence_tool = qc_worker.methods()["digital_silence"](silence_config)
+    result, _, error = aqc.check(source, [silence_tool], on_progress=_console)
+    if error or result.get("error") or len(result.get("tools", [])) != 1:
+        return False
+    measurement = result["tools"][0]
+    if measurement["status"] != status_texts[False]:
+        return False
+    channel_count = sum(line.count("Kanal ") for line in measurement["info"])
+    silent_channels = {
+        (failure["stream"], failure["channel"])
+        for failure in measurement["failures"]
+        if failure["criterion"] == "min_active"
+    }
+    return channel_count > 0 and len(silent_channels) == channel_count
+
+
 def _job_problem(job: dict) -> str | None:
     if not isinstance(job.get("input"), str) or not job["input"]:
         return "input fehlt"
@@ -151,18 +197,20 @@ def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport
     if problem := _job_problem(job):
         return adapter.JobReport("failed", f"Job ungültig: {problem}", qc_plan_name)
     source, is_ffe = adapter.share_path(job["input"]), job["ffe_tafel"]
+    is_silent = expected_silence(job) and _measured_silent(source)
     plan_name = f"{qc_plan_name}+{ffe_plan_name}" if is_ffe else qc_plan_name
-    adapter.log(f"Clip {job.get('clip_id', '?')}, FFE-Tafel {'ja' if is_ffe else 'nein'}, Prüfplan {plan_name} "
-                f"({len(qc_plan) + (len(ffe_plan) if is_ffe else 0)} Tools)")
-    adapter.log(f"Eingang: {_short_path(source)}, {_size_text(source)}")
-    # log_path=None: all worker and AQC lines arrive via _console and are logged there exactly once.
-    if not is_ffe:
-        result = qc_worker.process([source], _tools(qc_plan), output_folder, on_progress=_console)
-        return adapter.JobReport(job_status[result.state], result.summary, plan_name)
-    image = adapter.share_path(job["ffe_reference_image"])
-    adapter.log(f"Referenzbild: {_short_path(image)}, {_size_text(image)}")
-    with tempfile.TemporaryDirectory(prefix="qc_marathon_") as folder:
-        tools = _tools(qc_plan) + _ffe_tools(image, Path(folder))
+    temporary = tempfile.TemporaryDirectory(prefix="qc_marathon_") if is_silent or is_ffe else nullcontext()
+    with temporary as folder:
+        tools = _tools_for_job(job, is_silent, Path(folder) if folder else None)
+        tool_count = len(tools) + (len(ffe_plan) if is_ffe else 0)
+        adapter.log(f"Clip {job.get('clip_id', '?')}, FFE-Tafel {'ja' if is_ffe else 'nein'}, Prüfplan {plan_name} "
+                    f"({tool_count} Tools)")
+        adapter.log(f"Eingang: {_short_path(source)}, {_size_text(source)}")
+        if is_ffe:
+            image = adapter.share_path(job["ffe_reference_image"])
+            adapter.log(f"Referenzbild: {_short_path(image)}, {_size_text(image)}")
+            tools += _ffe_tools(image, Path(folder))
+        # log_path=None: all worker and AQC lines arrive via _console and are logged there exactly once.
         result = qc_worker.process([source], tools, output_folder, on_progress=_console)
     return adapter.JobReport(job_status[result.state], result.summary, plan_name)
 
