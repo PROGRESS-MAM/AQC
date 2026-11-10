@@ -72,6 +72,7 @@ Ergebnis: `dist/qc_marathon_<app_version>.exe` mit Adapter, Worker, AQC, `marath
 | `qc_plan` | Standard-Prüfplan für alle Clips: Liste der Tools |
 | `ffe_plan_name` | Name der FFE-Tafel-Prüfung; im Report als `<qc_plan_name>+<ffe_plan_name>` |
 | `ffe_plan` | zusätzliche Tools für Jobs mit `"ffe_tafel": true` |
+| `expected_silence` | Kollektion und Identifier-Präfixe, für die stummer Ton erlaubt ist (siehe „Erwartete Stille“) |
 
 Ein Eintrag in `qc_plan` oder `ffe_plan`:
 
@@ -109,6 +110,13 @@ Im Prüfbericht:
 
 - `failures`: je stummem Kanal ein Eintrag mit `criterion` `min_active`, `stream`, `channel` (ab 1) und dem gemessenen Anteil unter `actual`.
 - `info`: je Audiostream eine Zeile `Stream <n> Ist-Werte: Kanal 1 Ton=99.95% Spitze=-10.2 dBFS, …`; ein Kanal nur mit digitalen Nullen hat `Spitze=-inf dBFS`.
+
+## Erwartete Stille
+
+- Standardwert: `{"LYNXarchive": ("LA",), "Historiathek": ("H",)}` (wie im Transcoder).
+- Die Kollektion muss exakt übereinstimmen; beim Identifier werden äußere Leerzeichen entfernt, das Präfix ist groß-/kleinschreibungssensitiv. Fehlt eines der Felder, greift die Regel nicht.
+- Bei einem passenden Job misst der Worker vorab mit `keine_stille`. Sind alle Kanäle stumm, entfallen `digital_silence` und das Kriterium `bitrate` von `audio_aac_stereo`.
+- Andernfalls gilt der Standard-Prüfplan.
 
 ## FFE-Tafel
 

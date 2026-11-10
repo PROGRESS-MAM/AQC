@@ -11,15 +11,25 @@ from marathon import qc_marathon
 MATCHING_JOB = {"collection": "LYNXarchive", "identifier": " LA000674 "}
 
 
+def test_expected_silence_config():
+    assert qc_marathon.expected_silence == {"LYNXarchive": ("LA",), "Historiathek": ("H",)}
+
+
+def test_app_version_is_2_2_5():
+    assert qc_marathon.app_version == "2.2.5"
+
+
 @pytest.mark.parametrize(
     "job",
     [
         MATCHING_JOB,
         {"collection": "LYNXarchive", "identifier": "LA000674"},
+        {"collection": "Historiathek", "identifier": " H00015 "},
+        {"collection": "Historiathek", "identifier": "H00015"},
     ],
 )
-def test_expected_silence_matches_lynx_la_job(job):
-    assert qc_marathon.expected_silence(job) is True
+def test_expected_silence_matches_configured_job(job):
+    assert qc_marathon._expected_silence(job) is True
 
 
 @pytest.mark.parametrize(
@@ -32,14 +42,34 @@ def test_expected_silence_matches_lynx_la_job(job):
         {"collection": "LYNXarchive"},
         {"collection": None, "identifier": "LA000674"},
         {"collection": "LYNXarchive", "identifier": 674},
+        {"collection": "Historiathek", "identifier": "h00015"},
+        {"collection": "historiathek", "identifier": "H00015"},
+        {"collection": "Historiathek", "identifier": "LA000674"},
+        {"collection": "LYNXarchive", "identifier": "H00015"},
+        {"collection": "Historiathek"},
     ],
 )
 def test_expected_silence_rejects_nonmatching_or_incomplete_job(job):
-    assert qc_marathon.expected_silence(job) is False
+    assert qc_marathon._expected_silence(job) is False
 
 
 def test_silent_matching_job_skips_silence_and_audio_bitrate_checks(tmp_path):
     tools = qc_marathon._tools_for_job(MATCHING_JOB, is_silent=True, folder=tmp_path)
+
+    assert [entry["tool"] for entry in tools] == ["stream_specs", "stream_specs"]
+    audio_tool = next(entry for entry in tools if entry["config"].stem == "audio_aac_stereo")
+    config = tomllib.loads(audio_tool["config"].read_text(encoding="utf-8"))
+    assert "bitrate" not in config
+
+    original_config = tomllib.loads(
+        (qc_marathon.config_folder / "audio_aac_stereo.toml").read_text(encoding="utf-8")
+    )
+    assert "bitrate" in original_config
+
+
+def test_silent_historiathek_job_skips_silence_and_audio_bitrate_checks(tmp_path):
+    job = {"collection": "Historiathek", "identifier": "H00015"}
+    tools = qc_marathon._tools_for_job(job, is_silent=True, folder=tmp_path)
 
     assert [entry["tool"] for entry in tools] == ["stream_specs", "stream_specs"]
     audio_tool = next(entry for entry in tools if entry["config"].stem == "audio_aac_stereo")
@@ -130,11 +160,11 @@ def media_clips(tmp_path_factory):
     }
 
 
-def _run_media_job(monkeypatch, clip, output_folder):
+def _run_media_job(monkeypatch, clip, output_folder, job=MATCHING_JOB):
     monkeypatch.setattr(qc_marathon.adapter, "share_path", lambda path: Path(path))
     monkeypatch.setattr(qc_marathon.adapter, "log", lambda message: None)
     monkeypatch.setattr(qc_marathon.adapter, "status", lambda message: None)
-    job = {**MATCHING_JOB, "input": str(clip), "ffe_tafel": False}
+    job = {**job, "input": str(clip), "ffe_tafel": False}
     return qc_marathon.run_job(job, output_folder, output_folder / "qc.log")
 
 
@@ -143,6 +173,13 @@ def test_matching_silent_media_job_passes_without_bitrate_check(media_clips, mon
 
     assert report.status == "ok"
     assert report.preset == qc_marathon.qc_plan_name
+
+
+def test_historiathek_silent_media_job_passes_without_bitrate_check(media_clips, monkeypatch, tmp_path):
+    job = {"collection": "Historiathek", "identifier": "H00015"}
+    report = _run_media_job(monkeypatch, media_clips["silent"], tmp_path / "historiathek-report", job)
+
+    assert report.status == "ok"
 
 
 def test_matching_tone_media_job_keeps_bitrate_check_active(media_clips, monkeypatch, tmp_path):

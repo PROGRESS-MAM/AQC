@@ -15,13 +15,14 @@ import qc_worker
 
 # --------- CONFIG ---------
 app_name = "QC Marathon"
-app_version = "2.2.4"
+app_version = "2.2.5"
 
 root_path = Path(r"\\10.0.77.11\Ablage KI Proxy_1\Proxy 10 Mbit")   # like root_path in Marathon's res/config.ini
 work_dir = ".marathon"                      # like work_dir in Marathon's res/config.ini
 poll_seconds = 30
 heartbeat_seconds = 30
 stage = "QC"
+expected_silence = {"LYNXarchive": ("LA",), "Historiathek": ("H",)}  # collection: identifier prefixes where missing sound is expected
 
 qc_plan_name = "proxy_standard"
 qc_plan = [
@@ -56,10 +57,11 @@ main_log = _run_folder() / "qc_marathon.log"
 
 
 # --------- FUNC PLAN ---------
-def expected_silence(job: dict) -> bool:
+def _expected_silence(job: dict) -> bool:
     collection, identifier = job.get("collection"), job.get("identifier")
-    return (isinstance(collection, str) and isinstance(identifier, str)
-            and collection == "LYNXarchive" and identifier.strip().startswith("LA"))
+    if not isinstance(collection, str) or not isinstance(identifier, str):
+        return False
+    return any(identifier.strip().startswith(prefix) for prefix in expected_silence.get(collection, ()))
 
 
 def _tools(plan: list[dict]) -> list[dict]:
@@ -72,7 +74,7 @@ def _read_config(config: Path) -> dict:
 
 def _tools_for_job(job: dict, is_silent: bool, folder: Path | None = None) -> list[dict]:
     tools = _tools(qc_plan)
-    if not (expected_silence(job) and is_silent):
+    if not (_expected_silence(job) and is_silent):
         return tools
     if folder is None:
         raise ValueError("Temporärer Ordner für die Stille-Ausnahme fehlt.")
@@ -197,7 +199,7 @@ def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport
     if problem := _job_problem(job):
         return adapter.JobReport("failed", f"Job ungültig: {problem}", qc_plan_name)
     source, is_ffe = adapter.share_path(job["input"]), job["ffe_tafel"]
-    is_silent = expected_silence(job) and _measured_silent(source)
+    is_silent = _expected_silence(job) and _measured_silent(source)
     plan_name = f"{qc_plan_name}+{ffe_plan_name}" if is_ffe else qc_plan_name
     temporary = tempfile.TemporaryDirectory(prefix="qc_marathon_") if is_silent or is_ffe else nullcontext()
     with temporary as folder:
