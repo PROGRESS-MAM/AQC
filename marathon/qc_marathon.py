@@ -15,14 +15,14 @@ import qc_worker
 
 # --------- CONFIG ---------
 app_name = "QC Marathon"
-app_version = "2.2.5"
+app_version = "2.2.6"
 
 root_path = Path(r"\\10.0.77.11\Ablage KI Proxy_1\Proxy 10 Mbit")   # like root_path in Marathon's res/config.ini
 work_dir = ".marathon"                      # like work_dir in Marathon's res/config.ini
 poll_seconds = 30
 heartbeat_seconds = 30
 stage = "QC"
-expected_silence = {"LYNXarchive": ("LA",), "Historiathek": ("H",)}  # collection: identifier prefixes where missing sound is expected
+expected_silence = {"LYNXarchive": ("LA",), "Historiathek": ("H",), "DEFA Videoarchive B-Roll": ("DEFA",)}  # collection: identifier prefixes where missing sound is expected
 
 qc_plan_name = "proxy_standard"
 qc_plan = [

@@ -12,11 +12,15 @@ MATCHING_JOB = {"collection": "LYNXarchive", "identifier": " LA000674 "}
 
 
 def test_expected_silence_config():
-    assert qc_marathon.expected_silence == {"LYNXarchive": ("LA",), "Historiathek": ("H",)}
+    assert qc_marathon.expected_silence == {
+        "LYNXarchive": ("LA",),
+        "Historiathek": ("H",),
+        "DEFA Videoarchive B-Roll": ("DEFA",),
+    }
 
 
-def test_app_version_is_2_2_5():
-    assert qc_marathon.app_version == "2.2.5"
+def test_app_version_is_2_2_6():
+    assert qc_marathon.app_version == "2.2.6"
 
 
 @pytest.mark.parametrize(
@@ -26,6 +30,8 @@ def test_app_version_is_2_2_5():
         {"collection": "LYNXarchive", "identifier": "LA000674"},
         {"collection": "Historiathek", "identifier": " H00015 "},
         {"collection": "Historiathek", "identifier": "H00015"},
+        {"collection": "DEFA Videoarchive B-Roll", "identifier": " DEFA18458 "},
+        {"collection": "DEFA Videoarchive B-Roll", "identifier": "DEFA18532_14"},
     ],
 )
 def test_expected_silence_matches_configured_job(job):
@@ -47,6 +53,10 @@ def test_expected_silence_matches_configured_job(job):
         {"collection": "Historiathek", "identifier": "LA000674"},
         {"collection": "LYNXarchive", "identifier": "H00015"},
         {"collection": "Historiathek"},
+        {"collection": "DEFA Videoarchive B-Roll", "identifier": "defa18458"},
+        {"collection": "DEFA Videoarchive B-roll", "identifier": "DEFA18458"},
+        {"collection": "DEFA Der Augenzeuge", "identifier": "DEFA18458"},
+        {"collection": "DEFA Videoarchive B-Roll"},
     ],
 )
 def test_expected_silence_rejects_nonmatching_or_incomplete_job(job):
@@ -69,6 +79,21 @@ def test_silent_matching_job_skips_silence_and_audio_bitrate_checks(tmp_path):
 
 def test_silent_historiathek_job_skips_silence_and_audio_bitrate_checks(tmp_path):
     job = {"collection": "Historiathek", "identifier": "H00015"}
+    tools = qc_marathon._tools_for_job(job, is_silent=True, folder=tmp_path)
+
+    assert [entry["tool"] for entry in tools] == ["stream_specs", "stream_specs"]
+    audio_tool = next(entry for entry in tools if entry["config"].stem == "audio_aac_stereo")
+    config = tomllib.loads(audio_tool["config"].read_text(encoding="utf-8"))
+    assert "bitrate" not in config
+
+    original_config = tomllib.loads(
+        (qc_marathon.config_folder / "audio_aac_stereo.toml").read_text(encoding="utf-8")
+    )
+    assert "bitrate" in original_config
+
+
+def test_silent_defa_b_roll_job_skips_silence_and_audio_bitrate_checks(tmp_path):
+    job = {"collection": "DEFA Videoarchive B-Roll", "identifier": "DEFA18458"}
     tools = qc_marathon._tools_for_job(job, is_silent=True, folder=tmp_path)
 
     assert [entry["tool"] for entry in tools] == ["stream_specs", "stream_specs"]
@@ -178,6 +203,13 @@ def test_matching_silent_media_job_passes_without_bitrate_check(media_clips, mon
 def test_historiathek_silent_media_job_passes_without_bitrate_check(media_clips, monkeypatch, tmp_path):
     job = {"collection": "Historiathek", "identifier": "H00015"}
     report = _run_media_job(monkeypatch, media_clips["silent"], tmp_path / "historiathek-report", job)
+
+    assert report.status == "ok"
+
+
+def test_defa_b_roll_silent_media_job_passes_without_bitrate_check(media_clips, monkeypatch, tmp_path):
+    job = {"collection": "DEFA Videoarchive B-Roll", "identifier": "DEFA18458"}
+    report = _run_media_job(monkeypatch, media_clips["silent"], tmp_path / "defa-b-roll-report", job)
 
     assert report.status == "ok"
 

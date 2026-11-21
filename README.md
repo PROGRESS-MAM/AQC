@@ -113,7 +113,7 @@ Im Prüfbericht:
 
 ## Erwartete Stille
 
-- Standardwert: `{"LYNXarchive": ("LA",), "Historiathek": ("H",)}` (wie im Transcoder).
+- Standardwert: `{"LYNXarchive": ("LA",), "Historiathek": ("H",), "DEFA Videoarchive B-Roll": ("DEFA",)}` (wie im Transcoder).
 - Die Kollektion muss exakt übereinstimmen; beim Identifier werden äußere Leerzeichen entfernt, das Präfix ist groß-/kleinschreibungssensitiv. Fehlt eines der Felder, greift die Regel nicht.
 - Bei einem passenden Job misst der Worker vorab mit `keine_stille`. Sind alle Kanäle stumm, entfallen `digital_silence` und das Kriterium `bitrate` von `audio_aac_stereo`.
 - Andernfalls gilt der Standard-Prüfplan.

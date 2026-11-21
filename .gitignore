@@ -7,3 +7,6 @@ build
 dist
 res
 .monarch
+*.py[cod]
+.pytest_cache/
+.env
