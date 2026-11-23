@@ -73,6 +73,7 @@ Ergebnis: `dist/qc_marathon_<app_version>.exe` mit Adapter, Worker, AQC, `marath
 | `ffe_plan_name` | Name der FFE-Tafel-Prüfung; im Report als `<qc_plan_name>+<ffe_plan_name>` |
 | `ffe_plan` | zusätzliche Tools für Jobs mit `"ffe_tafel": true` |
 | `expected_silence` | Kollektion und Identifier-Präfixe, für die stummer Ton erlaubt ist (siehe „Erwartete Stille“) |
+| `silent_clips` | Kollektion und Identifier-Präfixe einzelner bekannt stummer Clips; ohne Messung (siehe „Erwartete Stille“) |
 
 Ein Eintrag in `qc_plan` oder `ffe_plan`:
 
@@ -116,6 +117,7 @@ Im Prüfbericht:
 - Standardwert: `{"LYNXarchive": ("LA",), "Historiathek": ("H",), "DEFA Videoarchive B-Roll": ("DEFA",)}` (wie im Transcoder).
 - Die Kollektion muss exakt übereinstimmen; beim Identifier werden äußere Leerzeichen entfernt, das Präfix ist groß-/kleinschreibungssensitiv. Fehlt eines der Felder, greift die Regel nicht.
 - Bei einem passenden Job misst der Worker vorab mit `keine_stille`. Sind alle Kanäle stumm, entfallen `digital_silence` und das Kriterium `bitrate` von `audio_aac_stereo`.
+- Einzeln bekannte stumme Clips stehen in `silent_clips`: `DEFA Videoarchive Cintec` → `DEFA06955`, `DEFA08247`, `DEFA01902`, `DEFA12880_2`; `DEFA Videoarchive Thomas Grimm` → `DEFA17661`, `DEFA02244_3` (wie im Transcoder). Hier entfallen `digital_silence` und das Kriterium `bitrate` von `audio_aac_stereo` immer, ohne Messung; so stören z. B. Knackser die Ausnahme nicht. Die Regeln für Kollektion und Identifier sind dieselben, ein Präfix gilt auch für Teile mit Suffix (z. B. `DEFA01902_1`).
 - Andernfalls gilt der Standard-Prüfplan.
 
 ## FFE-Tafel

@@ -19,8 +19,8 @@ def test_expected_silence_config():
     }
 
 
-def test_app_version_is_2_2_6():
-    assert qc_marathon.app_version == "2.2.6"
+def test_app_version_is_2_2_7():
+    assert qc_marathon.app_version == "2.2.7"
 
 
 @pytest.mark.parametrize(

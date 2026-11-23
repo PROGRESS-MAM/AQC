@@ -15,7 +15,7 @@ import qc_worker
 
 # --------- CONFIG ---------
 app_name = "QC Marathon"
-app_version = "2.2.6"
+app_version = "2.2.7"
 
 root_path = Path(r"\\10.0.77.11\Ablage KI Proxy_1\Proxy 10 Mbit")   # like root_path in Marathon's res/config.ini
 work_dir = ".marathon"                      # like work_dir in Marathon's res/config.ini
@@ -23,6 +23,7 @@ poll_seconds = 30
 heartbeat_seconds = 30
 stage = "QC"
 expected_silence = {"LYNXarchive": ("LA",), "Historiathek": ("H",), "DEFA Videoarchive B-Roll": ("DEFA",)}  # collection: identifier prefixes where missing sound is expected
+silent_clips = {"DEFA Videoarchive Cintec": ("DEFA06955", "DEFA08247", "DEFA01902", "DEFA12880_2"), "DEFA Videoarchive Thomas Grimm": ("DEFA17661", "DEFA02244_3")}  # collection: identifier prefixes of single clips known to be silent; no measurement
 
 qc_plan_name = "proxy_standard"
 qc_plan = [
@@ -57,11 +58,19 @@ main_log = _run_folder() / "qc_marathon.log"
 
 
 # --------- FUNC PLAN ---------
-def _expected_silence(job: dict) -> bool:
+def _matches(job: dict, table: dict[str, tuple[str, ...]]) -> bool:
     collection, identifier = job.get("collection"), job.get("identifier")
     if not isinstance(collection, str) or not isinstance(identifier, str):
         return False
-    return any(identifier.strip().startswith(prefix) for prefix in expected_silence.get(collection, ()))
+    return any(identifier.strip().startswith(prefix) for prefix in table.get(collection, ()))
+
+
+def _expected_silence(job: dict) -> bool:
+    return _matches(job, expected_silence)
+
+
+def _silent_clip(job: dict) -> bool:
+    return _matches(job, silent_clips)
 
 
 def _tools(plan: list[dict]) -> list[dict]:
@@ -74,7 +83,7 @@ def _read_config(config: Path) -> dict:
 
 def _tools_for_job(job: dict, is_silent: bool, folder: Path | None = None) -> list[dict]:
     tools = _tools(qc_plan)
-    if not (_expected_silence(job) and is_silent):
+    if not ((_expected_silence(job) or _silent_clip(job)) and is_silent):
         return tools
     if folder is None:
         raise ValueError("Temporärer Ordner für die Stille-Ausnahme fehlt.")
@@ -199,7 +208,7 @@ def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport
     if problem := _job_problem(job):
         return adapter.JobReport("failed", f"Job ungültig: {problem}", qc_plan_name)
     source, is_ffe = adapter.share_path(job["input"]), job["ffe_tafel"]
-    is_silent = _expected_silence(job) and _measured_silent(source)
+    is_silent = _silent_clip(job) or (_expected_silence(job) and _measured_silent(source))
     plan_name = f"{qc_plan_name}+{ffe_plan_name}" if is_ffe else qc_plan_name
     temporary = tempfile.TemporaryDirectory(prefix="qc_marathon_") if is_silent or is_ffe else nullcontext()
     with temporary as folder:
