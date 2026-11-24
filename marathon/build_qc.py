@@ -1,5 +1,6 @@
 # --------- IMPORTS ---------
 from pathlib import Path
+import importlib
 import os
 import sys
 import PyInstaller.__main__
@@ -7,7 +8,7 @@ import PyInstaller.__main__
 
 # --------- CONFIG ---------
 app_name = "QC Marathon Build"
-app_version = "1.0.0"
+app_version = "1.1.0"
 
 project = Path(__file__).resolve().parents[1]
 build_folder = project / "build"
@@ -36,17 +37,21 @@ def _data(source: str, target: str) -> str:
 
 
 # --------- MAIN ---------
-def main() -> None:
+def build(module_name: str) -> None:
     sys.path.insert(0, str(project))
-    from marathon import qc_marathon
-    exe_name = f"qc_marathon_{qc_marathon.app_version}"
+    module = importlib.import_module(f"marathon.{module_name}")
+    exe_name = f"{module_name}_{module.app_version}"
     PyInstaller.__main__.run([
-        str(project / "marathon" / "qc_marathon.py"), "--onefile", "--console", "--noconfirm",
+        str(project / "marathon" / f"{module_name}.py"), "--onefile", "--console", "--noconfirm",
         "--name", exe_name, "--paths", str(project),
         "--add-data", _data("marathon/configs", "marathon/configs"), "--add-data", _data("res", "res"),
-        "--version-file", str(_version_file(qc_marathon.app_name, qc_marathon.app_version, exe_name)),
+        "--version-file", str(_version_file(module.app_name, module.app_version, exe_name)),
         "--distpath", str(project / "dist"), "--workpath", str(build_folder), "--specpath", str(build_folder),
     ])
+
+
+def main() -> None:
+    build("qc_marathon")
 
 
 # --------- EXEC ---------

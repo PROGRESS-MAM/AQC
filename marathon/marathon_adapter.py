@@ -6,7 +6,7 @@
 # =====================================================================================
 
 # --------- IMPORTS ---------
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -25,10 +25,10 @@ from toolbox import tb_write_log
 
 # --------- CONFIG ---------
 app_name = "Marathon Adapter"
-app_version = "1.3.0"
+app_version = "1.4.0"
 
 schema_versions = (6,)                      # job schema versions this adapter understands
-stage_folders = {"Restore": "restore", "Transcode": "transcode", "QC": "qc"}
+stage_folders = {"Restore": "restore", "Transcode": "transcode", "QC": "qc", "FTP": "ftp"}
 report_statuses = ("ok", "failed", "rejected")
 item_statuses = ("restored", "failed")      # status of one entry in items
 worker_dir = "worker"
@@ -49,7 +49,7 @@ class Settings:
     """
     root_path: Path
     work_dir: str
-    stage: str                              # "Restore" | "Transcode" | "QC"
+    stage: str                              # "Restore" | "Transcode" | "QC" | "FTP"
     poll_seconds: float
     heartbeat_seconds: float                # at most 60
     log_path: Path
@@ -62,12 +62,15 @@ class JobReport:
     """Answer of the stage adapter for one job; result is required unless status is ok.
 
     items (Restore) and new_master (Transcode) are written to the report only when set.
+    ftp_file and size (FTP) are written to the report only when set.
     """
-    status: str                             # "ok" | "failed" | "rejected" (QC only)
+    status: str                             # "ok" | "failed" | "rejected" (QC and FTP only)
     result: str = ""
     preset: str | None = None
     items: list[dict] | None = None
     new_master: str | None = None
+    ftp_file: str | None = None
+    size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -299,10 +302,12 @@ def _report_folder(job: dict | None, default: Path) -> Path:
 def _checked(report: JobReport) -> JobReport:
     if (not isinstance(report, JobReport) or report.status not in report_statuses
             or not (report.items is None or isinstance(report.items, list) and all(isinstance(item, dict) for item in report.items))
-            or not (report.new_master is None or isinstance(report.new_master, str))):
+            or not (report.new_master is None or isinstance(report.new_master, str))
+            or not (report.ftp_file is None or isinstance(report.ftp_file, str))
+            or not (report.size is None or type(report.size) is int and report.size >= 0)):
         return JobReport("failed", f"Ungültiges Ergebnis des Stage-Adapters: {report!r}")
     if report.status != "ok" and not str(report.result or "").strip():
-        return JobReport(report.status, "ohne Angabe", report.preset, report.items, report.new_master)
+        return replace(report, result="ohne Angabe")
     return report
 
 
@@ -321,7 +326,8 @@ def _write_until_done(path: Path, data: dict, label: str) -> None:
 def _write_report(folder: Path, job_id: str, report: JobReport, name: str) -> None:
     """Write the report; keeps trying while the share is unavailable, no new job is taken meanwhile."""
     data = {"job_id": job_id, "status": report.status, "result": str(report.result or ""), "preset": report.preset,
-            **{key: value for key, value in (("items", report.items), ("new_master", report.new_master)) if value is not None},
+            **{key: value for key, value in (("items", report.items), ("new_master", report.new_master),
+                                              ("ftp_file", report.ftp_file), ("size", report.size)) if value is not None},
             "worker": name, "versions": _settings.versions}
     _write_until_done(folder / f"{job_id}.json", data, f"Report {job_id}")
 

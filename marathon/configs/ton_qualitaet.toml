@@ -1,0 +1,7 @@
+tool = "sound_quality"
+threshold = "-60dB"
+min_dynamics = "6dB"
+window = "2s"
+min_high = "-20dB"
+max_loudness = "-22.5LUFS"
+max_true_peak = "-1dBTP"

@@ -1,0 +1,5 @@
+tool = "audible_sound"
+threshold = "-60dB"
+min_dynamics = "6dB"
+min_active = "10%"
+window = "2s"

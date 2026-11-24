@@ -13,7 +13,9 @@ Prüft Clips mit AQC. Der QC-Worker ist universell einsetzbar. Der Marathon-Adap
 | `marathon/marathon_adapter.py` | allgemeiner Teil aller Marathon-Adapter, **nicht verändern** |
 | `marathon/qc_marathon.py` | QC-Adapter: Einstellungen und Prüfplan, Einstieg der EXE |
 | `marathon/configs/` | TOML-Dateien der Prüftools |
-| `marathon/build_qc.py` | baut die EXE |
+| `marathon/build_qc.py` | baut die EXE des QC-Workers; enthält `build()` für alle Worker-EXEs |
+| `marathon/ftp_marathon.py` | FTP-Worker: Tonprüfung, Kopie auf den FTP, Vorab-Prüfung (siehe „FTP-Worker“) |
+| `marathon/build_ftp.py` | baut die EXE des FTP-Workers |
 
 ## Installation
 
@@ -58,6 +60,74 @@ python marathon/build_qc.py
 ```
 
 Ergebnis: `dist/qc_marathon_<app_version>.exe` mit Adapter, Worker, AQC, `marathon/configs/` und `res/`. Die Version steht im Dateinamen und in den Windows-Dateieigenschaften. Änderungen an Einstellungen, Prüfplan oder Configs gelten erst mit einem neuen Build.
+
+## FTP-Worker
+
+Prüft freigegebene Proxys auf Ton und kopiert nur bestandene Proxys auf den FTP. Marathon legt die Jobs mit `send-to-ftp` und der Job-Schleife aus. Der Worker heißt `<Rechnername>-FTP`.
+
+Start als Skript mit `python -m marathon.ftp_marathon`, als EXE mit `ftp_marathon_<version>.exe`. Gebaut wird die EXE mit `python marathon/build_ftp.py`; das Ergebnis liegt in `dist/`. Nach dem Start fragt der Worker den Modus ab:
+
+```text
+Modus wählen: [1] Produktion (Jobs von Marathon, Kopie auf den FTP)  [2] Vorab-Prüfung (bereite Clips aus marathon.json, keine Kopie)
+```
+
+### Prüfplan `ftp_ton`
+
+| Tool | Config | bestanden, wenn |
+|---|---|---|
+| `audible_sound` | `hoerbarer_ton` | jeder Kanal hat hörbaren Ton (siehe Prüftool `audible_sound`) |
+| `sound_quality` | `ton_qualitaet` | Ton nicht dumpf, Lautheit und True Peak innerhalb EBU R128 (siehe Prüftool `sound_quality`) |
+
+Beide Tools lehnen ab. Die Ausnahmen für erwartete Stille gelten hier nicht. Die Werte stehen in `marathon/configs/hoerbarer_ton.toml` und `marathon/configs/ton_qualitaet.toml` und gelten erst mit einem neuen Build.
+
+### Produktion
+
+1. Job aus `<work_dir>/ftp/offen` übernehmen (Adapter ab 1.4.0, Heartbeat wie bei den anderen Workern).
+2. Größe des Proxys aus `input` mit `size` im Job vergleichen; bei Abweichung `failed`.
+3. Prüfplan ausführen; Prüfbericht `<clip>.aqc.json` in `output_folder`.
+4. Nur bei bestandener Prüfung nach `ftp_dir` unter `ftp_name` kopieren. Die Kopie entsteht als `.<ftp_name>.part` und wird erst am Ende umbenannt. Eine vorhandene Datei gleicher Größe gilt als bereits kopiert, eine mit anderer Größe wird ersetzt.
+5. Report in `report_folder`; `preset` ist `ftp_ton`.
+
+| Ergebnis | `status` | Report |
+|---|---|---|
+| Prüfung bestanden und Kopie vollständig | `ok` | zusätzlich `ftp_file` (= `ftp_name`) und `size` |
+| Prüfung nicht bestanden | `rejected` | Kurztext mit den nicht bestandenen Tools; keine Kopie |
+| Job ungültig, Quelle unlesbar oder falsche Größe, Tool nicht ausführbar, Kopie fehlgeschlagen | `failed` | Kurztext mit dem Grund; keine Kopie |
+
+Ungültig sind Jobs ohne `input`, ohne positive ganze Zahl in `size`, ohne vollständigen Pfad in `ftp_dir` und ohne gültigen Dateinamen in `ftp_name`. Beenden mit `Strg+C`: Eine angefangene Kopie wird entfernt, der Job beim nächsten Start als `failed` gemeldet.
+
+### Vorab-Prüfung
+
+Prüft alle bereiten Clips mit demselben Prüfplan, ohne Jobs von Marathon, ohne Heartbeat und ohne Kopie.
+
+- Der Worker fragt nach dem Pfad zu Marathons `state/marathon.json` (JSON-Version 8); Anführungszeichen werden entfernt. Die Datei wird nur gelesen.
+- Geprüft werden aktive, bereite Clips mit Proxy, die noch nicht auf den FTP kopiert sind, sortiert nach Clip-ID. Der Proxy liegt unter `root_path/<files.proxy.folder>/<files.proxy.name>`.
+- Ergebnis neben der EXE bzw. in `marathon/`: Ordner `vorab_<JJJJMMTT_HHMMSS>/` mit `vorab.csv` und `berichte/<clip>.aqc.json`.
+- `vorab.csv`: Trennzeichen `;`, UTF-8 mit BOM (öffnet direkt in Excel), eine Zeile je Clip, nach jedem Clip gespeichert.
+
+| Spalte | Inhalt |
+|---|---|
+| `clip_id`, `kollektion`, `identifier`, `titel` | aus der Marathon-JSON |
+| `datei` | Dateiname des Proxys |
+| `status` | `ok`, `rejected` oder `error` |
+| `kurztext` | Ergebnis in einem Satz |
+| `audible_sound`, `sound_quality` | Status des Tools und je Fehler `<Kriterium> Stream <n> Kanal <k>: <Ist-Wert>` |
+| `audible_sound_werte`, `sound_quality_werte` | Ist-Werte des Tools (Zeilen aus `info`) |
+| `bericht` | Pfad des Prüfberichts |
+
+`Strg+C` beendet die Vorab-Prüfung; die Liste enthält alle bis dahin fertigen Clips. Am Ende und nach einem Fehler wartet das Fenster auf Enter.
+
+### Einstellungen in `ftp_marathon.py`
+
+| Eintrag | Bedeutung |
+|---|---|
+| `app_version` | Version der EXE |
+| `root_path`, `work_dir` | wie in Marathons `res/config.ini` |
+| `poll_seconds`, `heartbeat_seconds` | wie beim QC-Worker |
+| `plan_name`, `plan` | Prüfplan, Einträge wie in `qc_plan` |
+| `copy_chunk` | Blockgröße der Kopie in Bytes |
+
+Log: `ftp_marathon.log` neben der EXE bzw. in `marathon/`.
 
 ## Einstellungen in `qc_marathon.py`
 
