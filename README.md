@@ -7,7 +7,7 @@ Prüft Clips mit AQC. Der QC-Worker ist universell einsetzbar. Der Marathon-Adap
 | Pfad | Aufgabe |
 |---|---|
 | `aqc/` | Core: `check()` |
-| `aqc/tools/` | Prüftools `stream_specs`, `digital_silence`, `reference_frame` |
+| `aqc/tools/` | Prüftools `stream_specs`, `digital_silence`, `reference_frame`, `audible_sound`, `sound_quality` |
 | `res/` | `ffmpeg` und `ffprobe` |
 | `qc_worker.py` | QC-Worker: `process()` |
 | `marathon/marathon_adapter.py` | allgemeiner Teil aller Marathon-Adapter, **nicht verändern** |
@@ -111,6 +111,66 @@ Im Prüfbericht:
 
 - `failures`: je stummem Kanal ein Eintrag mit `criterion` `min_active`, `stream`, `channel` (ab 1) und dem gemessenen Anteil unter `actual`.
 - `info`: je Audiostream eine Zeile `Stream <n> Ist-Werte: Kanal 1 Ton=99.95% Spitze=-10.2 dBFS, …`; ein Kanal nur mit digitalen Nullen hat `Spitze=-inf dBFS`.
+
+## Prüftool `audible_sound`
+
+Prüft, ob jeder Kanal jedes Audiostreams hörbaren Ton enthält. Rauschen jeder Art, Brummen und gleichbleibende Töne (z. B. ein Bezugston) zählen als stumm, auch bei hohem Pegel. Jeder Kanal wird in Fenster der Länge `window` geteilt, jedes Fenster in Abschnitte von 0,1 s. Ein Fenster zählt als Ton, wenn sein Pegel (RMS) mindestens `threshold` erreicht und sein Pegel über den gesamten Frequenzbereich ab 100 Hz oder in einem der Oktavbänder von 354 Hz bis 11,3 kHz um mindestens `min_dynamics` schwankt (Abstand zwischen 90 %- und 10 %-Wert der Abschnitte). Ist der Anteil der Fenster mit Ton an der Länge des Audiostreams kleiner als `min_active`, gilt der Kanal als stumm und das Tool ist nicht bestanden. Einzelne Knackser ändern das Ergebnis nicht; dichtes Knistern zählt als Ton.
+
+```toml
+tool         = "audible_sound"
+threshold    = "-60dB"
+min_dynamics = "6dB"
+min_active   = "10%"
+window       = "2s"
+```
+
+| Eintrag | Pflicht | Bedeutung |
+|---|---|---|
+| `tool` | ja | `audible_sound` |
+| `threshold` | ja | Pegelschwelle in dBFS (RMS je Fenster), kleiner als 0; z. B. `"-60dB"` |
+| `min_dynamics` | ja | Mindestschwankung des Pegels im Fenster in dB, größer als 0; z. B. `"6dB"` |
+| `min_active` | ja | Mindestanteil mit Ton je Kanal in Prozent, größer als 0 bis 100; z. B. `"10%"` |
+| `window` | nein | Fensterlänge, mindestens `0.2s`; Standard `2s` |
+
+Im Prüfbericht:
+
+- `failures`: je stummem Kanal ein Eintrag mit `criterion` `min_active`, `stream`, `channel` (ab 1) und dem gemessenen Anteil unter `actual`.
+- `info`: je Audiostream eine Zeile `Stream <n> Ist-Werte: Kanal 1 Ton=87.50% Dynamik=25.1 dB, …`; `Dynamik` ist der Median der Fenster über `threshold`, `-` ohne solche Fenster.
+
+## Prüftool `sound_quality`
+
+Prüft je Audiostream, ob der Ton dumpf oder zu laut ist.
+
+- **Dumpf:** In den Fenstern mit Ton (Regeln und Einträge `threshold`, `min_dynamics`, `window` wie bei `audible_sound`) wird je Oktavband nur der schwankende Teil der Energie gezählt; gleichmäßiges Rauschen fällt so heraus. Ist der Anteil der Bänder ab 2,8 kHz daran kleiner als `min_high`, ist der Kanal dumpf. Ein Kanal ohne Ton wird hier nicht bewertet.
+- **Lautheit:** Integrated Loudness nach EBU R128 über den ganzen Stream, höchstens `max_loudness`.
+- **True Peak:** je Kanal nach EBU R128, höchstens `max_true_peak`.
+
+Zu leiser Ton führt nicht zu einem Fehler. Das Tool liest jeden Audiostream zweimal: einmal für die Höhen, einmal für Lautheit und True Peak.
+
+```toml
+tool          = "sound_quality"
+threshold     = "-60dB"
+min_dynamics  = "6dB"
+window        = "2s"
+min_high      = "-20dB"
+max_loudness  = "-22.5LUFS"
+max_true_peak = "-1dBTP"
+```
+
+| Eintrag | Pflicht | Bedeutung |
+|---|---|---|
+| `tool` | ja | `sound_quality` |
+| `threshold` | ja | wie bei `audible_sound` |
+| `min_dynamics` | ja | wie bei `audible_sound` |
+| `window` | nein | wie bei `audible_sound`; Standard `2s` |
+| `min_high` | ja | Mindestanteil der Höhen ab 2,8 kHz in dB, kleiner als 0; z. B. `"-20dB"` |
+| `max_loudness` | ja | höchste Integrated Loudness in LUFS, kleiner als 0; EBU R128: −23 LUFS ±0,5 LU |
+| `max_true_peak` | ja | höchster True Peak in dBTP, höchstens 0; EBU R128: −1 dBTP |
+
+Im Prüfbericht:
+
+- `failures`: `loudness` je Stream, `dull` und `true_peak` je Kanal (`channel` ab 1), jeweils mit dem gemessenen Wert unter `actual`.
+- `info`: je Audiostream eine Zeile `Stream <n> Ist-Werte: Lautheit=-23.0 LUFS, Kanal 1 Höhen=-12.3 dB Spitze=-1.2 dBTP, …`; `Lautheit=nicht messbar` bei Stille, `Höhen=kein Ton` ohne Fenster mit Ton.
 
 ## Erwartete Stille
 
