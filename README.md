@@ -94,6 +94,18 @@ Beide Tools lehnen ab. Die Ausnahmen für erwartete Stille gelten hier nicht. Di
 | Prüfung nicht bestanden | `rejected` | Kurztext mit den nicht bestandenen Tools; keine Kopie |
 | Job ungültig, Quelle unlesbar oder falsche Größe, Tool nicht ausführbar, Kopie fehlgeschlagen | `failed` | Kurztext mit dem Grund; keine Kopie |
 
+#### Vorab-Ergebnis übernehmen
+
+Beim Produktionsstart kann ein Ordner `vorab_<…>` oder eine `vorab.csv` übernommen werden; Enter lässt alle Clips normal prüfen. Übersprungen wird die Tonprüfung nur, wenn:
+
+- der Clip in `vorab.csv` den Status `ok` hat;
+- der Bericht unter `berichte/` bestanden ist;
+- der Bericht denselben Proxy-Pfad wie `input` enthält;
+- die Prüftools mit `ftp_ton` übereinstimmen;
+- der Proxy nicht neuer als der Bericht ist.
+
+Andernfalls läuft die normale Prüfung; der Worker protokolliert `Vorab-Ergebnis nicht verwendet`. Die Größenprüfung bleibt unverändert. Bei gültigem Vorab-Ergebnis wird der Bericht in `output_folder` kopiert und der Proxy wie gewohnt auf den FTP kopiert. Das Ergebnis lautet `Tonprüfung aus Vorab-Prüfung übernommen: …`. Ist der Bericht nicht kopierbar, lautet der Jobstatus `failed` und es erfolgt keine FTP-Kopie.
+
 Ungültig sind Jobs ohne `input`, ohne positive ganze Zahl in `size`, ohne vollständigen Pfad in `ftp_dir` und ohne gültigen Dateinamen in `ftp_name`. Beenden mit `Strg+C`: Eine angefangene Kopie wird entfernt, der Job beim nächsten Start als `failed` gemeldet.
 
 ### Vorab-Prüfung

@@ -1,10 +1,12 @@
 # --------- IMPORTS ---------
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable
 import csv
+import functools
 import json
 import os
+import shutil
 import sys
 import tomllib
 import traceback
@@ -16,7 +18,7 @@ import qc_worker
 
 # --------- CONFIG ---------
 app_name = "FTP Marathon"
-app_version = "1.1.0"
+app_version = "1.2.0"
 
 root_path = Path(r"\\10.0.77.11\Ablage KI Proxy_1\Proxy 10 Mbit")   # like root_path in Marathon's res/config.ini
 work_dir = ".marathon"
@@ -106,6 +108,61 @@ def copy_to_ftp(source: Path, target: Path, size: int, progress: Callable[[int],
         raise RuntimeError(f"Kopie hat {actual} Bytes statt {size}")
 
 
+# --------- FUNC VORAB-ERGEBNIS ---------
+def load_vorab(path: Path) -> dict[str, Path]:
+    """Passed clips of a Vorab run: {clip_id: report path in <folder>/berichte}; path is the Vorab folder or its vorab.csv.
+
+    Raises FileNotFoundError without vorab.csv and ValueError without the columns clip_id, status, bericht.
+    """
+    csv_path = path if path.name.casefold() == "vorab.csv" else path / "vorab.csv"
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"vorab.csv nicht gefunden: {csv_path}")
+
+    with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter=";")
+        required = {"clip_id", "status", "bericht"}
+        if not required.issubset(reader.fieldnames or ()):
+            raise ValueError(f"{csv_path}: keine Vorab-Liste (Spalten clip_id, status, bericht fehlen).")
+
+        reports = {}
+        rejected = set()
+        for row in reader:
+            clip_id = row.get("clip_id")
+            report = row.get("bericht")
+            if not clip_id:
+                continue
+            if row.get("status") != "ok" or not report:
+                rejected.add(clip_id)
+                reports.pop(clip_id, None)
+                continue
+            if clip_id not in rejected:
+                reports.setdefault(clip_id, csv_path.parent / "berichte" / PureWindowsPath(report).name)
+    return reports
+
+
+def _vorab_report(job: dict, source: Path, vorab: dict[str, Path]) -> tuple[Path | None, str]:
+    try:
+        report = vorab[str(job.get("clip_id"))]
+        data = json.loads(report.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Prüfbericht ist kein JSON-Objekt")
+        if data["state"] != "ok" or data["passed"] is not True:
+            return None, "Bericht nicht bestanden"
+        report_path = data["path"]
+        if os.path.normcase(os.path.normpath(report_path)) != os.path.normcase(os.path.normpath(str(source))):
+            return None, f"Bericht gilt für anderen Proxy: {report_path}"
+        if {tool.get("kind") for tool in data["tools"]} != {entry["tool"] for entry in plan}:
+            return None, "Bericht hat andere Prüftools"
+        if source.stat().st_mtime > report.stat().st_mtime:
+            return None, "Proxy nach der Vorab-Prüfung geändert"
+        summary = data["summary"]
+        if not isinstance(summary, str):
+            raise ValueError("Prüfbericht enthält keine Zusammenfassung")
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return None, f"Bericht nicht lesbar: {exc}"
+    return report, summary
+
+
 # --------- FUNC JOB ---------
 def _short_path(path: str | Path) -> Path:
     parts = Path(path).parts
@@ -150,7 +207,7 @@ def _job_problem(job: dict) -> str | None:
     return None
 
 
-def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport:
+def run_job(job: dict, output_folder: Path, log_path: Path, vorab: dict[str, Path] | None = None) -> adapter.JobReport:
     if problem := _job_problem(job):
         return adapter.JobReport("failed", f"Job ungültig: {problem}", plan_name)
 
@@ -164,9 +221,24 @@ def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport
     if actual != job["size"]:
         return adapter.JobReport("failed", f"Quelle hat {actual} Bytes statt {job['size']} laut Job", plan_name)
 
-    result = qc_worker.process([source], _tools(), output_folder, on_progress=_console)
-    if result.state != "ok":
-        return adapter.JobReport(job_status[result.state], result.summary, plan_name)
+    summary = None
+    if vorab and str(job.get("clip_id")) in vorab:
+        report, detail = _vorab_report(job, source, vorab)
+        if report is None:
+            adapter.log(f"Vorab-Ergebnis nicht verwendet: {detail}")
+        else:
+            try:
+                shutil.copy2(report, output_folder / report.name)
+            except OSError as exc:
+                return adapter.JobReport("failed", f"Vorab-Bericht nicht kopierbar: {exc}", plan_name)
+            adapter.log(f"Tonprüfung aus Vorab-Prüfung übernommen: {_short_path(report)}")
+            summary = f"Tonprüfung aus Vorab-Prüfung übernommen: {detail}"
+
+    if summary is None:
+        result = qc_worker.process([source], _tools(), output_folder, on_progress=_console)
+        if result.state != "ok":
+            return adapter.JobReport(job_status[result.state], result.summary, plan_name)
+        summary = result.summary
 
     target = Path(job["ftp_dir"]) / job["ftp_name"]
     adapter.log(f"Kopie nach {target} …")
@@ -182,7 +254,7 @@ def run_job(job: dict, output_folder: Path, log_path: Path) -> adapter.JobReport
         return adapter.JobReport("failed", f"Kopie auf den FTP fehlgeschlagen: {exc}", plan_name)
 
     adapter.log(f"Kopiert: {target}, {job['size']} Bytes")
-    return adapter.JobReport("ok", result.summary, plan_name, ftp_file=job["ftp_name"], size=job["size"])
+    return adapter.JobReport("ok", summary, plan_name, ftp_file=job["ftp_name"], size=job["size"])
 
 
 # --------- FUNC VORAB ---------
@@ -278,6 +350,25 @@ def run_vorab(state_file: Path, folder: Path) -> Path:
     return csv_path
 
 
+def _ask_vorab(ask: Callable[[str], str] = input) -> dict[str, Path]:
+    prompt = "Vorab-Ordner übernehmen (bestandene Clips ohne erneute Tonprüfung), Enter = alle Clips prüfen: "
+    while True:
+        try:
+            answer = ask(prompt).strip().strip('"').strip("'").strip()
+        except EOFError:
+            return {}
+        if not answer:
+            return {}
+        folder = Path(answer)
+        try:
+            vorab = load_vorab(folder)
+        except (FileNotFoundError, ValueError, OSError, UnicodeError) as exc:
+            _say(str(exc))
+            continue
+        _say(f"Vorab-Ergebnis: {len(vorab)} bestandene Clips aus {folder}; für diese entfällt die Tonprüfung.")
+        return vorab
+
+
 # --------- FUNC CONSOLE ---------
 def _say(message: str) -> None:
     print(f"{datetime.now():%H:%M:%S} {message}", flush=True)
@@ -321,9 +412,10 @@ def _pause() -> None:
 
 
 # --------- MAIN ---------
-def _run_production() -> None:
+def _run_production(vorab: dict[str, Path] | None = None) -> None:
     versions = {"ftp_marathon": app_version, "marathon_adapter": adapter.app_version, **qc_worker.versions()}
-    adapter.run(adapter.Settings(root_path, work_dir, stage, poll_seconds, heartbeat_seconds, main_log, versions), run_job)
+    run_job_func = functools.partial(run_job, vorab=vorab) if vorab else run_job
+    adapter.run(adapter.Settings(root_path, work_dir, stage, poll_seconds, heartbeat_seconds, main_log, versions), run_job_func)
 
 
 def main() -> None:
@@ -334,7 +426,7 @@ def main() -> None:
         run_vorab(_ask_state_file(), _run_folder() / f"vorab_{datetime.now():%Y%m%d_%H%M%S}")
         _pause()
         return
-    _run_production()
+    _run_production(_ask_vorab())
 
 
 # --------- EXEC ---------

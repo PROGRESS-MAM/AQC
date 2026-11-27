@@ -179,7 +179,7 @@ def test_run_production_settings(monkeypatch):
 
     settings = captured["settings"]
     assert settings.stage == "FTP"
-    assert settings.versions["ftp_marathon"] == "1.1.0"
+    assert settings.versions["ftp_marathon"] == "1.2.0"
     assert settings.versions["marathon_adapter"] == "1.4.0"
     assert captured["run_job"] is ftp_marathon.run_job
 
@@ -189,8 +189,9 @@ def test_main_production(monkeypatch):
     monkeypatch.setattr(ftp_marathon, "_say", lambda message: None)
     monkeypatch.setattr(ftp_marathon, "_check_plan", lambda: None)
     monkeypatch.setattr(ftp_marathon, "_ask_mode", lambda: "produktion")
-    monkeypatch.setattr(ftp_marathon, "_run_production", lambda: called.append(True))
+    monkeypatch.setattr(ftp_marathon, "_ask_vorab", lambda: {})
+    monkeypatch.setattr(ftp_marathon, "_run_production", lambda vorab=None: called.append(vorab))
 
     ftp_marathon.main()
 
-    assert called == [True]
+    assert called == [{}]
